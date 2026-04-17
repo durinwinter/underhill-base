@@ -1,0 +1,2 @@
+asyncua==1.1.5
+aiohttp==3.12.15

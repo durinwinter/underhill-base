@@ -1,0 +1,222 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - img "Underhill Airlock Systems" [ref=e4]
+      - generic [ref=e5]:
+        - heading "Mars Airlock Simulator" [level=1] [ref=e6]
+        - paragraph [ref=e7]: OPC UA + MTP Data Model + Fendt-style HMI
+    - generic [ref=e8]:
+      - generic [ref=e9]: Security
+      - combobox "Security" [ref=e10]:
+        - option "NONE" [selected]
+        - option "BOTH"
+        - option "BASIC256SHA256"
+      - generic [ref=e11]: live
+  - main [ref=e12]:
+    - generic [ref=e13]:
+      - heading "OPC UA Connectivity & Diagnostics" [level=2] [ref=e14]
+      - generic [ref=e15]:
+        - generic [ref=e16]:
+          - generic [ref=e17]: Endpoint
+          - generic [ref=e18]: opc.tcp://10.241.88.227:4841/mars-airlock
+        - generic [ref=e19]:
+          - generic [ref=e20]: Active Security
+          - generic [ref=e21]: NONE
+        - generic [ref=e22]:
+          - generic [ref=e23]: Clients
+          - generic [ref=e24]: "0"
+        - generic [ref=e25]:
+          - generic [ref=e26]: Subscriptions
+          - generic [ref=e27]: "0"
+        - generic [ref=e28]:
+          - generic [ref=e29]: Publish Rate (Hz)
+          - generic [ref=e30]: "10.0"
+        - generic [ref=e31]:
+          - generic [ref=e32]: Server Start (UTC)
+          - generic [ref=e33]: 2026-02-27T03:25:21.166Z
+        - generic [ref=e34]:
+          - generic [ref=e35]: Uptime (s)
+          - generic [ref=e36]: "94.0"
+        - generic [ref=e37]:
+          - generic [ref=e38]: Client Summary
+          - generic [ref=e39]: opcua_sessions=0, opcua_subscriptions=0, web_sessions=2
+        - generic [ref=e40]:
+          - generic [ref=e41]: Last Rejected Command
+          - generic [ref=e42]: "-"
+        - generic [ref=e43]:
+          - generic [ref=e44]: Last Error
+          - generic [ref=e45]: "-"
+      - heading "MTP Modes" [level=3] [ref=e46]
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - checkbox "Operator Control" [checked] [ref=e49]
+          - text: Operator Control
+        - generic [ref=e50]:
+          - checkbox "Remote Control" [checked] [ref=e51]
+          - text: Remote Control
+        - generic [ref=e52]:
+          - checkbox "CommandEn" [checked] [ref=e53]
+          - text: CommandEn
+        - generic [ref=e54]:
+          - text: Operation Mode
+          - combobox "Operation Mode" [ref=e55]:
+            - option "OFF"
+            - option "AUTO" [selected]
+            - option "MANUAL"
+            - option "MAINT"
+        - generic [ref=e56]:
+          - text: CommandEn Reason
+          - textbox "CommandEn Reason" [ref=e57]:
+            - /placeholder: Optional reason
+        - button "Apply Controls" [ref=e58] [cursor=pointer]
+      - heading "Connected Sessions" [level=3] [ref=e59]
+      - generic [ref=e60]:
+        - generic [ref=e61]: ws-session-1 | 172.20.0.1:42262
+        - generic [ref=e62]: ws-session-7 | 172.20.0.1:55852
+    - generic [ref=e63]:
+      - heading "3D Real-Time Airlock View" [level=2] [ref=e64]
+      - generic [ref=e67]:
+        - generic [ref=e68]: State faulted
+        - generic [ref=e69]: Active UNLOCK_OUTER_DOOR
+        - generic [ref=e70]: Source OPERATOR_UI
+        - generic [ref=e71]: Procedure None
+        - generic [ref=e72]: Progress 100.0%
+        - generic [ref=e73]: Blocking Outer door unlocked
+      - generic [ref=e74]:
+        - heading "3D View Tuning" [level=3] [ref=e75]
+        - generic [ref=e76]:
+          - generic [ref=e77]:
+            - text: Airlock Model Scale
+            - slider "Airlock Model Scale 0.65x" [ref=e78]: "0.65"
+            - generic [ref=e79]: 0.65x
+          - generic [ref=e80]:
+            - text: Camera Distance
+            - slider "Camera Distance 12.2" [ref=e81]: "12.2"
+            - generic [ref=e82]: "12.2"
+        - button "Reset 3D View" [ref=e83] [cursor=pointer]
+    - generic [ref=e84]:
+      - heading "Fendt-Themed HMI + P&ID" [level=2] [ref=e85]
+      - generic [ref=e86]:
+        - generic [ref=e87]:
+          - generic [ref=e88]: Pressure (Pa)
+          - progressbar [ref=e89]
+          - generic [ref=e90]: "700"
+        - generic [ref=e91]:
+          - generic [ref=e92]: Temperature (K)
+          - progressbar [ref=e93]
+          - generic [ref=e94]: "222.63"
+        - generic [ref=e95]:
+          - generic [ref=e96]: O2 (%)
+          - progressbar [ref=e97]
+          - generic [ref=e98]: "1.46"
+        - generic [ref=e99]:
+          - generic [ref=e100]: Pump Current (A)
+          - progressbar [ref=e101]
+          - generic [ref=e102]: "0.00"
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - heading "Operator Commands" [level=3] [ref=e105]
+          - generic [ref=e106]:
+            - button "Depressurize" [ref=e107] [cursor=pointer]
+            - button "Pressurize" [ref=e108] [cursor=pointer]
+            - button "Abort" [ref=e109] [cursor=pointer]
+            - button "Reset Faults" [ref=e110] [cursor=pointer]
+          - generic [ref=e111]:
+            - generic [ref=e112]:
+              - heading "Inner Door" [level=4] [ref=e113]
+              - generic [ref=e114]:
+                - text: How Open (%)
+                - slider "How Open (%) 100%" [ref=e115]: "100"
+                - generic [ref=e116]: 100%
+              - generic [ref=e117]:
+                - button "Open to Target" [ref=e118] [cursor=pointer]
+                - button "Close" [ref=e119] [cursor=pointer]
+                - button "Unlock" [ref=e120] [cursor=pointer]
+                - button "Lock" [ref=e121] [cursor=pointer]
+            - generic [ref=e122]:
+              - heading "Outer Door" [level=4] [ref=e123]
+              - generic [ref=e124]:
+                - text: How Open (%)
+                - slider "How Open (%) 100%" [ref=e125]: "100"
+                - generic [ref=e126]: 100%
+              - generic [ref=e127]:
+                - button "Open to Target" [ref=e128] [cursor=pointer]
+                - button "Close" [ref=e129] [cursor=pointer]
+                - button "Unlock" [active] [ref=e130] [cursor=pointer]
+                - button "Lock" [ref=e131] [cursor=pointer]
+        - generic [ref=e132]:
+          - heading "Fault Injection" [level=3] [ref=e133]
+          - generic [ref=e134]:
+            - generic [ref=e135]:
+              - text: Leak Rate Nominal
+              - spinbutton "Leak Rate Nominal" [ref=e136]: "0.0005"
+            - button "Apply Leak Rate" [ref=e137] [cursor=pointer]
+            - button "Nominal Leak" [ref=e138] [cursor=pointer]
+            - button "Moderate Leak" [ref=e139] [cursor=pointer]
+            - button "Severe Leak" [ref=e140] [cursor=pointer]
+            - button "Reset Leak" [ref=e141] [cursor=pointer]
+          - generic [ref=e142]: "Leak Rate: 0.0005"
+      - img "Airlock P and ID" [ref=e144]:
+        - generic [ref=e146]: Habitat
+        - generic [ref=e148]: Airlock
+        - generic [ref=e150]: Mars
+        - generic [ref=e152]: EQ
+        - generic [ref=e154]: VENT
+        - generic [ref=e156]: Pump
+        - generic [ref=e157]: "Doors: inner 0% / outer 0%"
+        - generic [ref=e158]: "Valves: eq 0% / vent 0%"
+        - generic [ref=e159]: "Alarms: LOW_PRESSURE"
+      - heading "Alarm & Events" [level=3] [ref=e160]
+      - generic [ref=e161]:
+        - generic [ref=e162]:
+          - generic [ref=e163]: 8:26:53 PM | INFO | OPERATOR_UI
+          - generic [ref=e164]: UNLOCK_OUTER_DOOR -> Complete (Outer door unlocked)
+        - generic [ref=e165]:
+          - generic [ref=e166]: 8:26:53 PM | INFO | OPERATOR_UI
+          - generic [ref=e167]: Accepted command UNLOCK_OUTER_DOOR (seq=2)
+        - generic [ref=e168]:
+          - generic [ref=e169]: 8:26:53 PM | INFO | OPERATOR_UI
+          - generic [ref=e170]: RESET_FAULTS -> Complete (Faults reset)
+        - generic [ref=e171]:
+          - generic [ref=e172]: 8:26:53 PM | INFO | OPERATOR_UI
+          - generic [ref=e173]: Accepted command RESET_FAULTS (seq=1)
+        - generic [ref=e174]:
+          - generic [ref=e175]: 8:26:53 PM | INFO | SYSTEM
+          - generic [ref=e176]: "Client connected: ws-session-7"
+        - generic [ref=e177]:
+          - generic [ref=e178]: 8:26:51 PM | INFO | SYSTEM
+          - generic [ref=e179]: "Client disconnected: 6"
+        - generic [ref=e180]:
+          - generic [ref=e181]: 8:26:50 PM | INFO | OPERATOR_UI
+          - generic [ref=e182]: UNLOCK_OUTER_DOOR -> Complete (Outer door unlocked)
+        - generic [ref=e183]:
+          - generic [ref=e184]: 8:26:50 PM | INFO | OPERATOR_UI
+          - generic [ref=e185]: Accepted command UNLOCK_OUTER_DOOR (seq=2)
+        - generic [ref=e186]:
+          - generic [ref=e187]: 8:26:49 PM | INFO | OPERATOR_UI
+          - generic [ref=e188]: RESET_FAULTS -> Complete (Faults reset)
+        - generic [ref=e189]:
+          - generic [ref=e190]: 8:26:49 PM | INFO | OPERATOR_UI
+          - generic [ref=e191]: Accepted command RESET_FAULTS (seq=1)
+        - generic [ref=e192]:
+          - generic [ref=e193]: 8:26:49 PM | INFO | SYSTEM
+          - generic [ref=e194]: "Client connected: ws-session-6"
+        - generic [ref=e195]:
+          - generic [ref=e196]: 8:26:48 PM | INFO | SYSTEM
+          - generic [ref=e197]: "Client disconnected: 5"
+        - generic [ref=e198]:
+          - generic [ref=e199]: 8:26:48 PM | INFO | OPERATOR_UI
+          - generic [ref=e200]: RESET_FAULTS -> Complete (Faults reset)
+        - generic [ref=e201]:
+          - generic [ref=e202]: 8:26:48 PM | INFO | OPERATOR_UI
+          - generic [ref=e203]: Accepted command RESET_FAULTS (seq=3)
+        - generic [ref=e204]:
+          - generic [ref=e205]: 8:26:47 PM | WARN | OPERATOR_UI
+          - generic [ref=e206]: ABORT_CYCLE -> Aborted (Abort requested)
+        - generic [ref=e207]:
+          - generic [ref=e208]: 8:26:47 PM | INFO | OPERATOR_UI
+          - generic [ref=e209]: Accepted command ABORT_CYCLE (seq=2)
+```

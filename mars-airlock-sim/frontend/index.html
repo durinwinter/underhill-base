@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Underhill Base Operations Dashboard</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.161.0/build/three.module.js"
+        }
+      }
+    </script>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="./assets/underhill-airlock-logo.png" alt="Underhill Systems" class="brand-logo" />
+      <div>
+        <h1>Underhill Base Operations</h1>
+        <p class="subtitle">Unified Procedural Command & Control</p>
+      </div>
+    </div>
+    <div class="topbar-controls">
+      <label for="security-select">Security Profile</label>
+      <select id="security-select">
+        <option value="NONE">NONE</option>
+        <option value="BOTH">BOTH (Sign & Encrypt)</option>
+        <option value="BASIC256SHA256">BASIC256SHA256</option>
+      </select>
+      <label class="toggle" for="layout-debug-toggle">
+        <input id="layout-debug-toggle" type="checkbox" />
+        Layout Debug
+      </label>
+      <span id="connection-pill" class="pill">CONNECTING</span>
+    </div>
+  </header>
+
+  <main class="layout-unified">
+    <div class="main-viewport">
+      <div id="three-wrap"></div>
+
+      <div class="floating-controls">
+        <button class="hmi-trigger" data-modal="tab-base">BASE OVERVIEW</button>
+        <button class="hmi-trigger" data-modal="tab-airlock">AIRLOCK PEA</button>
+        <button class="hmi-trigger" data-modal="tab-eclss">ECLSS PEA</button>
+        <button class="hmi-trigger" data-modal="tab-sabatier">SABATIER PEA</button>
+      </div>
+    </div>
+
+    <!-- Modal Layer for HMI Panels -->
+    <div class="modal-layer">
+
+      <!-- BASE MODAL -->
+      <div class="subsystem-modal" id="tab-base">
+        <div class="modal-header">
+          <h3>Base Operations Overview</h3>
+          <button class="close-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="status-strip">
+            <div><span class="k">Airlock</span> <span id="base-airlock-state">-</span></div>
+            <div><span class="k">ECLSS</span> <span id="base-eclss-state">-</span></div>
+            <div><span class="k">Sabatier</span> <span id="base-sabatier-state">-</span></div>
+            <div><span class="k">Active Cmd</span> <span id="active-command">-</span></div>
+            <div><span class="k">Progress</span> <span id="active-progress">0%</span></div>
+            <div><span class="k">CmdEn</span> <span id="mode-command-en">?</span></div>
+            <div><span class="k">CmdEnReason</span> <span id="mode-command-en-reason">-</span></div>
+            <div><span class="k">ApplyEn</span> <span id="mode-apply-en">?</span></div>
+            <div><span class="k">ApplyEnReason</span> <span id="mode-apply-en-reason">-</span></div>
+            <div><span class="k">Blocking</span> <span id="blocking-condition">-</span></div>
+          </div>
+
+          <div class="diag-section">
+            <h4>Industrial Diagnostics</h4>
+            <div class="diag-grid">
+              <div>
+                <div class="k">System Uptime</div>
+                <div id="server-uptime" class="v">0</div>
+              </div>
+              <div>
+                <div class="k">Last Reject</div>
+                <div id="last-reject" class="v mono">-</div>
+              </div>
+              <div>
+                <div class="k">Active Faults</div>
+                <div id="last-error" class="v alarm-text">-</div>
+              </div>
+            </div>
+          </div>
+
+          <h4>Connected Operator Sessions</h4>
+          <div id="session-list" class="session-list"></div>
+        </div>
+      </div>
+
+      <!-- AIRLOCK MODAL -->
+      <div class="subsystem-modal" id="tab-airlock">
+        <div class="modal-header">
+          <h3>Airlock Command & Control</h3>
+          <button class="close-modal">&times;</button>
+        </div>
+        <div class="status-strip" style="margin:0.5rem 0;">
+          <div>State <span id="state-name">-</span></div>
+        </div>
+        <div class="modal-body">
+          <div class="gauges">
+            <div class="gauge"><label>Pressure (Pa)</label><progress id="g-pressure" max="120000"
+                value="0"></progress><span class="v-large" id="v-pressure">0</span></div>
+            <div class="gauge"><label>O2 (%)</label><progress id="g-o2" max="25" value="0"></progress><span
+                class="v-large" id="v-o2">0</span></div>
+          </div>
+
+          <div class="hmi-panels">
+            <div id="airlock-status-msg" class="status-bar" style="margin-bottom:0.5rem;color:#e83e8c;font-weight:bold;"></div>
+          <div class="hmi-control-panel">
+              <h4>Procedures</h4>
+              <div class="procedure-layout">
+                <div class="procedure-actions">
+                  <div class="command-row">
+                    <button data-command="START_DEPRESSURIZE_CYCLE">Depressurize</button>
+                    <button data-command="START_PRESSURIZE_CYCLE">Pressurize</button>
+                    <button class="btn-abort" data-command="ABORT_CYCLE">Abort</button>
+                  </div>
+
+                  <div class="door-control-grid">
+                    <div class="door-control">
+                      <h4>Inner Door</h4>
+                      <div class="command-row" style="margin-bottom: 0.4rem;">
+                        <button class="mini-btn" id="cmd-lock-inner">Lock</button>
+                        <button class="mini-btn" id="cmd-unlock-inner">Unlock</button>
+                      </div>
+                      <div class="command-row">
+                        <button id="cmd-open-inner">Open</button>
+                        <button id="cmd-close-inner">Close</button>
+                      </div>
+                    </div>
+                    <div class="door-control">
+                      <h4>Outer Door</h4>
+                      <div class="command-row" style="margin-bottom: 0.4rem;">
+                        <button class="mini-btn" id="cmd-lock-outer">Lock</button>
+                        <button class="mini-btn" id="cmd-unlock-outer">Unlock</button>
+                      </div>
+                      <div class="command-row">
+                        <button id="cmd-open-outer">Open</button>
+                        <button id="cmd-close-outer">Close</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="command-decision-panel" aria-live="polite">
+                  <h4>Command State</h4>
+                  <div class="command-state-grid">
+                    <div class="k">Current State</div>
+                    <div class="v mono" id="cmd-current-state">-</div>
+                    <div class="k">Active Command</div>
+                    <div class="v mono" id="cmd-current-active">-</div>
+                    <div class="k">Blocked/Reason</div>
+                    <div class="v" id="cmd-blocked-reason">-</div>
+                  </div>
+                  <h5>Allowed Now</h5>
+                  <ul id="cmd-allowed-list" class="allowed-command-list"></ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="hmi-control-panel">
+              <h4>Process Schematic (P&ID)</h4>
+              <div class="pid-wrap-operator">
+                <svg viewBox="0 0 400 200" class="pid-svg-operator">
+                  <!-- Clean industrial lines -->
+                  <line x1="50" y1="100" x2="350" y2="100" stroke="#adb5bd" stroke-width="2" />
+                  <rect x="150" y="60" width="100" height="80" rx="4" fill="#f8f9fa" stroke="#495057"
+                    stroke-width="2" />
+                  <text x="200" y="105" text-anchor="middle" font-size="12" fill="#495057"
+                    font-weight="bold">CHAMBER</text>
+
+                  <!-- Valves -->
+                  <g id="equalize-valve-pkg" transform="translate(100, 100)">
+                    <path d="M-10,-10 L10,10 L10,-10 L-10,10 Z" fill="#6c757d" id="equalize-valve-icon" />
+                    <text y="-15" text-anchor="middle" font-size="10">EQ-01</text>
+                  </g>
+                  <g id="vent-valve-pkg" transform="translate(300, 100)">
+                    <path d="M-10,-10 L10,10 L10,-10 L-10,10 Z" fill="#6c757d" id="vent-valve-icon" />
+                    <text y="-15" text-anchor="middle" font-size="10">VT-01</text>
+                  </g>
+
+                  <!-- Pump -->
+                  <g id="pump-pkg" transform="translate(200, 40)">
+                    <circle r="15" fill="#f8f9fa" stroke="#495057" stroke-width="2" />
+                    <path d="M-8,-8 L8,0 L-8,8 Z" fill="#6c757d" id="pump-icon" />
+                    <text x="20" y="5" font-size="10">P-01</text>
+                  </g>
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <h4>Real-time Event Log</h4>
+          <div id="event-log" class="event-log"></div>
+        </div>
+      </div>
+
+      <!-- ECLSS MODAL -->
+      <div class="subsystem-modal" id="tab-eclss">
+        <div class="modal-header">
+          <h3>ECLSS Life Support Control</h3>
+          <button class="close-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="gauges">
+            <div class="gauge"><label>Cabin Pressure (kPa)</label><progress id="eclss-g-pressure" max="130"
+                value="0"></progress><span class="v-large" id="eclss-v-pressure">0</span></div>
+            <div class="gauge"><label>CO2 (ppm)</label><progress id="eclss-g-co2" max="8000" value="0"></progress><span
+                class="v-large" id="eclss-v-co2">0</span></div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>System Commands</h4>
+            <div class="command-row">
+              <button id="eclss-deploy">Deploy</button>
+              <button id="eclss-start">Start</button>
+              <button class="btn-abort" id="eclss-stop">Stop</button>
+            </div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>ECLSS Procedure Controls</h4>
+            <div class="procedure-layout">
+              <div class="procedure-actions">
+                <div class="command-row">
+                  <button id="eclss-cmd-start-scrubber">Start CO2 Scrubber</button>
+                  <button id="eclss-cmd-stop-scrubber">Stop CO2 Scrubber</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="eclss-cmd-start-electrolyzer">Start Electrolyzer</button>
+                  <button id="eclss-cmd-stop-electrolyzer">Stop Electrolyzer</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="eclss-cmd-start-water">Start Water Processor</button>
+                  <button id="eclss-cmd-stop-water">Stop Water Processor</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="eclss-cmd-isolate">Isolate Branch</button>
+                  <button id="eclss-cmd-restore">Restore Branch</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="eclss-cmd-safehaven-on">Enable Safe Haven</button>
+                  <button id="eclss-cmd-safehaven-off">Disable Safe Haven</button>
+                </div>
+              </div>
+              <div class="command-decision-panel" aria-live="polite">
+                <h4>ECLSS Command State</h4>
+                <div class="command-state-grid">
+                  <div class="k">Service State</div>
+                  <div class="v mono" id="eclss-cmd-current-state">-</div>
+                  <div class="k">Active Procedure</div>
+                  <div class="v mono" id="eclss-cmd-active-procedure">-</div>
+                  <div class="k">Last Command</div>
+                  <div class="v mono" id="eclss-cmd-last-command">-</div>
+                  <div class="k">Last Status</div>
+                  <div class="v mono" id="eclss-cmd-last-status">-</div>
+                  <div class="k">Blocked/Reason</div>
+                  <div class="v" id="eclss-cmd-last-reason">-</div>
+                </div>
+                <h5>Allowed Now</h5>
+                <ul id="eclss-cmd-allowed-list" class="allowed-command-list"></ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>ECLSS Setpoints</h4>
+            <div class="setpoint-grid">
+              <label>
+                CO2 Removal Flow (kg/h)
+                <input id="eclss-set-co2-flow" type="number" min="0" max="2.4" step="0.05" value="0.7" />
+              </label>
+              <button id="eclss-apply-co2-flow">Apply</button>
+
+              <label>
+                O2 Generation Rate (kg/h)
+                <input id="eclss-set-o2-rate" type="number" min="0" max="2.0" step="0.05" value="0.8" />
+              </label>
+              <button id="eclss-apply-o2-rate">Apply</button>
+
+              <label>
+                Water Recovery Target (%)
+                <input id="eclss-set-water-target" type="number" min="60" max="95" step="0.5" value="88" />
+              </label>
+              <button id="eclss-apply-water-target">Apply</button>
+
+              <label>
+                Humidity Target (%)
+                <input id="eclss-set-humidity-target" type="number" min="25" max="75" step="0.5" value="47" />
+              </label>
+              <button id="eclss-apply-humidity-target">Apply</button>
+
+              <label>
+                Cabin Pressure Target (kPa)
+                <input id="eclss-set-pressure-target" type="number" min="90" max="105" step="0.1" value="101.3" />
+              </label>
+              <button id="eclss-apply-pressure-target">Apply</button>
+            </div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>Module Schematic</h4>
+            <div class="pid-wrap-operator">
+              <svg viewBox="0 0 400 120" class="pid-svg-operator">
+                <rect x="50" y="20" width="300" height="80" rx="8" fill="#f8f9fa" stroke="#495057" stroke-width="2" />
+                <circle cx="100" cy="60" r="15" fill="#e9ecef" stroke="#adb5bd" />
+                <circle cx="200" cy="60" r="15" fill="#e9ecef" stroke="#adb5bd" />
+                <circle cx="300" cy="60" r="15" fill="#e9ecef" stroke="#adb5bd" />
+                <text x="100" y="65" text-anchor="middle" font-size="8">ADS</text>
+                <text x="200" y="65" text-anchor="middle" font-size="8">OGS</text>
+                <text x="300" y="65" text-anchor="middle" font-size="8">WRS</text>
+              </svg>
+            </div>
+          </div>
+
+          <div class="diag-section">
+            <h4>Module Metrics</h4>
+            <div class="diag-grid">
+              <div>
+                <div class="k">Water Recov</div>
+                <div id="eclss-v-water-recovery" class="v">0%</div>
+              </div>
+              <div>
+                <div class="k">O2 Gen</div>
+                <div id="eclss-v-o2-gen" class="v">0 kg/h</div>
+              </div>
+              <div>
+                <div class="k">CO2 Capture</div>
+                <div id="eclss-v-co2-capture" class="v">0 kg/h</div>
+              </div>
+              <div>
+                <div class="k">Humidity</div>
+                <div id="eclss-v-humidity" class="v">0%</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SABATIER MODAL -->
+      <div class="subsystem-modal" id="tab-sabatier">
+        <div class="modal-header">
+          <h3>Sabatier Reactor Control</h3>
+          <button class="close-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="gauges">
+            <div class="gauge"><label>Reactor Temp (C)</label><progress id="sabatier-g-temp" max="900"
+                value="0"></progress><span class="v-large" id="sabatier-v-temp">0</span></div>
+            <div class="gauge"><label>CH4 Feed</label><progress id="sabatier-g-co2-feed" max="20"
+                value="0"></progress><span class="v-large" id="sabatier-v-co2-feed">0</span></div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>Reactor Commands</h4>
+            <div class="command-row">
+              <button id="sabatier-deploy">Deploy</button>
+              <button id="sabatier-start">Start</button>
+              <button class="btn-abort" id="sabatier-stop">Stop</button>
+            </div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>Sabatier Procedure Controls</h4>
+            <div class="procedure-layout">
+              <div class="procedure-actions">
+                <div class="command-row">
+                  <button id="sabatier-cmd-start-methanation">Start Methanation</button>
+                  <button id="sabatier-cmd-stop-methanation">Stop Methanation</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="sabatier-cmd-start-feed-conditioning">Start Feed Conditioning</button>
+                  <button id="sabatier-cmd-stop-feed-conditioning">Stop Feed Conditioning</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="sabatier-cmd-start-h2-recovery">Start H2 Recovery</button>
+                  <button id="sabatier-cmd-stop-h2-recovery">Stop H2 Recovery</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="sabatier-cmd-start-regen">Start Catalyst Regen</button>
+                  <button id="sabatier-cmd-stop-regen">Stop Catalyst Regen</button>
+                </div>
+                <div class="command-row" style="margin-top:0.4rem;">
+                  <button id="sabatier-cmd-emergency-vent" class="btn-abort">Emergency Vent</button>
+                  <button id="sabatier-cmd-safe-shutdown" class="btn-abort">Safe Shutdown</button>
+                </div>
+              </div>
+              <div class="command-decision-panel" aria-live="polite">
+                <h4>Sabatier Command State</h4>
+                <div class="command-state-grid">
+                  <div class="k">Service State</div>
+                  <div class="v mono" id="sabatier-cmd-current-state">-</div>
+                  <div class="k">Active Procedure</div>
+                  <div class="v mono" id="sabatier-cmd-active-procedure">-</div>
+                  <div class="k">Last Command</div>
+                  <div class="v mono" id="sabatier-cmd-last-command">-</div>
+                  <div class="k">Last Status</div>
+                  <div class="v mono" id="sabatier-cmd-last-status">-</div>
+                  <div class="k">Blocked/Reason</div>
+                  <div class="v" id="sabatier-cmd-last-reason">-</div>
+                </div>
+                <h5>Allowed Now</h5>
+                <ul id="sabatier-cmd-allowed-list" class="allowed-command-list"></ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>Sabatier Setpoints</h4>
+            <div class="setpoint-grid">
+              <label>
+                CO2 Feed Valve (%)
+                <input id="sabatier-set-co2-valve" type="number" min="0" max="100" step="1" value="50" />
+              </label>
+              <button id="sabatier-apply-co2-valve">Apply</button>
+
+              <label>
+                H2 Feed Valve (%)
+                <input id="sabatier-set-h2-valve" type="number" min="0" max="100" step="1" value="50" />
+              </label>
+              <button id="sabatier-apply-h2-valve">Apply</button>
+
+              <label>
+                Reactor Temp Target (C)
+                <input id="sabatier-set-temp-target" type="number" min="250" max="430" step="1" value="325" />
+              </label>
+              <button id="sabatier-apply-temp-target">Apply</button>
+
+              <label>
+                Reactor Pressure Target (bar)
+                <input id="sabatier-set-pressure-target" type="number" min="2" max="10" step="0.1" value="9" />
+              </label>
+              <button id="sabatier-apply-pressure-target">Apply</button>
+            </div>
+          </div>
+
+          <div class="hmi-control-panel">
+            <h4>Reactor Schematic</h4>
+            <div class="pid-wrap-operator">
+              <svg viewBox="0 0 400 120" class="pid-svg-operator">
+                <path d="M50,80 L350,80" stroke="#adb5bd" stroke-width="2" fill="none" />
+                <rect x="150" y="30" width="100" height="70" rx="4" fill="#f8f9fa" stroke="#495057" stroke-width="2" />
+                <text x="200" y="70" text-anchor="middle" font-size="10" font-weight="bold">REACTOR</text>
+                <path d="M100,80 L100,50 L140,50" stroke="#adb5bd" stroke-width="2" fill="none" />
+                <text x="100" y="45" text-anchor="middle" font-size="8">CO2 IN</text>
+              </svg>
+            </div>
+          </div>
+
+          <div class="diag-section">
+            <h4>Reactor Metrics</h4>
+            <div class="diag-grid">
+              <div>
+                <div class="k">Pressure</div>
+                <div id="sabatier-v-pressure" class="v">0 bar</div>
+              </div>
+              <div>
+                <div class="k">H2 Feed</div>
+                <div id="sabatier-v-h2-feed" class="v">0 kg/h</div>
+              </div>
+              <div>
+                <div class="k">Efficiency</div>
+                <div id="sabatier-v-efficiency" class="v">0%</div>
+              </div>
+              <div>
+                <div class="k">CH4 Prod</div>
+                <div id="sabatier-v-methane" class="v">0 kg/h</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+
+</html>

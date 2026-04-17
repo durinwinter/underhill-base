@@ -1,0 +1,28 @@
+services:
+  mars-airlock:
+    container_name: mars-airlock-sim
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    environment:
+      AIRLOCK_SECURITY_PROFILE: "${AIRLOCK_SECURITY_PROFILE:-NONE}"
+      AIRLOCK_OPCUA_BIND_HOST: "${AIRLOCK_OPCUA_BIND_HOST:-0.0.0.0}"
+      AIRLOCK_OPCUA_HOST: "${AIRLOCK_OPCUA_HOST:-}"
+      AIRLOCK_OPCUA_PORT: "${AIRLOCK_OPCUA_PORT:-4841}"
+      AIRLOCK_OPCUA_ENDPOINT_PATH: "${AIRLOCK_OPCUA_ENDPOINT_PATH:-/underhill/airlock}"
+      AIRLOCK_OPCUA_ENDPOINT_URL: "${AIRLOCK_OPCUA_ENDPOINT_URL:-opc.tcp://127.0.0.1:4841/underhill/airlock}"
+      ECLSS_OPCUA_PORT: "${ECLSS_OPCUA_PORT:-4842}"
+      SABATIER_OPCUA_PORT: "${SABATIER_OPCUA_PORT:-4843}"
+      POWERGRID_OPCUA_PORT: "${POWERGRID_OPCUA_PORT:-4844}"
+      MURPH_NODE_ID: "${MURPH_NODE_ID:-local}"
+      ZENOH_ROUTER: "${ZENOH_ROUTER:-}"
+      UNS_MQTT_BROKER: "${UNS_MQTT_BROKER:-}"
+      UNS_MQTT_CLIENT_ID: "${UNS_MQTT_CLIENT_ID:-underhill-uns-publisher}"
+      UNS_MQTT_USERNAME: "${UNS_MQTT_USERNAME:-}"
+      UNS_MQTT_PASSWORD: "${UNS_MQTT_PASSWORD:-}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - "./pki:/app/backend/pki"
+      - "./frontend:/app/frontend"
+    restart: unless-stopped

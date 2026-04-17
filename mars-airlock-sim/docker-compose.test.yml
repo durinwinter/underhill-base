@@ -1,0 +1,35 @@
+services:
+  mars-airlock:
+    container_name: mars-airlock-sim-test
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${AIRLOCK_HTTP_PORT:-8080}:8080"
+    environment:
+      AIRLOCK_SECURITY_PROFILE: "${AIRLOCK_SECURITY_PROFILE:-NONE}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/health || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    restart: "no"
+
+  opcua-gateway:
+    container_name: mars-airlock-opcua-test
+    build:
+      context: .
+      dockerfile: Dockerfile.opcua-gateway
+    ports:
+      - "4841:4841"
+    environment:
+      BACKEND_BASE_URL: "http://mars-airlock:8080"
+      OPCUA_ENDPOINT: "opc.tcp://0.0.0.0:4841/mars-airlock"
+      POLL_INTERVAL_SEC: "0.2"
+      LOG_LEVEL: "INFO"
+    depends_on:
+      mars-airlock:
+        condition: service_healthy
+    restart: "no"

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Underhill Base — Systems Visualization</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Courier New', monospace;
+      background: #0a0a15;
+      color: #cccccc;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    .header {
+      background: linear-gradient(90deg, #1a1a2a 0%, #2a3a4a 50%, #1a1a2a 100%);
+      border-bottom: 2px solid #4a7a3a;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #4aff4a;
+      text-shadow: 0 0 8px rgba(74, 255, 74, 0.3);
+    }
+
+    .header .subtitle {
+      font-size: 12px;
+      color: #888888;
+      margin-left: 8px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 2px;
+      background: #1a1a2a;
+      padding: 8px 12px;
+      border-bottom: 1px solid #3a4a5a;
+    }
+
+    .tab {
+      padding: 8px 16px;
+      cursor: pointer;
+      background: #2a3a4a;
+      border: 1px solid #3a4a5a;
+      color: #888888;
+      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 0.5px;
+      transition: all 0.3s ease;
+      border-radius: 2px 2px 0 0;
+    }
+
+    .tab:hover {
+      background: #3a4a5a;
+      color: #aaaaaa;
+    }
+
+    .tab.active {
+      background: #4a7a3a;
+      color: #ffffff;
+      border-color: #4a7a3a;
+      box-shadow: 0 0 8px rgba(74, 122, 58, 0.4);
+    }
+
+    .viewport-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background: #0a0a15;
+    }
+
+    .viewport {
+      width: 100%;
+      height: 100%;
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    .viewport.active {
+      display: block;
+    }
+
+    .info-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: rgba(10, 10, 21, 0.85);
+      border: 1px solid #4a7a3a;
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 12px;
+      max-width: 300px;
+      color: #aaaaaa;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+      z-index: 100;
+    }
+
+    .info-panel h3 {
+      color: #4aff4a;
+      font-size: 13px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .info-panel .param {
+      display: flex;
+      justify-content: space-between;
+      margin: 4px 0;
+      font-size: 11px;
+    }
+
+    .info-panel .param-value {
+      color: #4aff4a;
+      font-weight: bold;
+    }
+
+    .status-bar {
+      background: #1a1a2a;
+      border-top: 1px solid #3a4a5a;
+      padding: 8px 16px;
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4aff4a;
+      box-shadow: 0 0 4px rgba(74, 255, 74, 0.6);
+    }
+
+    .status-indicator.inactive {
+      background: #666666;
+      box-shadow: none;
+    }
+
+    .help-text {
+      font-size: 10px;
+      color: #666666;
+    }
+
+    /* System-specific colors */
+    .airlock-color { color: #88ccff; }
+    .eclss-color { color: #4aff4a; }
+    .sabatier-color { color: #ffcc88; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>🔴 UNDERHILL BASE <span class="subtitle">Systems Monitoring & Control</span></h1>
+      <div class="help-text">v1.0 • Three.js Web GL • Real-time Simulation</div>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div class="tabs">
+      <div class="tab active airlock-color" onclick="switchTab('airlock', event)">
+        ⊕ Airlock Chamber
+      </div>
+      <div class="tab eclss-color" onclick="switchTab('eclss', event)">
+        ≈ ECLSS System
+      </div>
+      <div class="tab sabatier-color" onclick="switchTab('sabatier', event)">
+        ⚗ Sabatier Reactor
+      </div>
+    </div>
+
+    <!-- Viewport Container -->
+    <div class="viewport-container">
+      <!-- Airlock View (Default) -->
+      <div id="airlock-viewport" class="viewport active"></div>
+
+      <!-- ECLSS View -->
+      <div id="eclss-viewport" class="viewport"></div>
+
+      <!-- Sabatier View -->
+      <div id="sabatier-viewport" class="viewport"></div>
+
+      <!-- Info Panel -->
+      <div class="info-panel">
+        <h3 id="system-title">Airlock Chamber</h3>
+        <div class="param">
+          <span>Interior Pressure:</span>
+          <span class="param-value" id="param-pressure">101.3 kPa</span>
+        </div>
+        <div class="param">
+          <span>Exterior Pressure:</span>
+          <span class="param-value">0.7 kPa</span>
+        </div>
+        <div class="param">
+          <span>Status:</span>
+          <span class="param-value" id="param-status">Nominal</span>
+        </div>
+        <div class="param">
+          <span>Inner Door:</span>
+          <span class="param-value" id="param-door-inner">Sealed</span>
+        </div>
+        <div class="param">
+          <span>Outer Door:</span>
+          <span class="param-value" id="param-door-outer">Sealed</span>
+        </div>
+        <hr style="margin: 8px 0; border: none; border-top: 1px solid #3a4a5a;">
+        <div class="help-text">
+          💡 Click & drag to rotate • Scroll to zoom • Alt+drag to pan
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div class="status-item">
+        <span class="status-indicator"></span>
+        <span>Systems Online</span>
+      </div>
+      <div class="status-item">
+        <span>Simulation: <strong>Running</strong></span>
+      </div>
+      <div class="status-item">
+        <span>FPS: <strong id="fps">60</strong></span>
+      </div>
+      <div class="status-item">
+        <span class="help-text">Last Update: <span id="last-update">Now</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Three.js Libraries -->
+  <script>
+    // Simple FPS counter
+    let frameCount = 0;
+    let lastTime = Date.now();
+    
+    function updateFPS() {
+      frameCount++;
+      const now = Date.now();
+      if (now - lastTime > 1000) {
+        document.getElementById('fps').textContent = frameCount;
+        frameCount = 0;
+        lastTime = now;
+      }
+    }
+
+    // Tab switching
+    let scenes = {};
+    let currentScene = 'airlock';
+
+    async function switchTab(name, event) {
+      // Update tab styling
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.remove('active');
+      });
+      event.target.classList.add('active');
+
+      // Show/hide viewports
+      document.querySelectorAll('.viewport').forEach(v => {
+        v.classList.remove('active');
+      });
+      document.getElementById(`${name}-viewport`).classList.add('active');
+
+      // Update info panel
+      const titles = {
+        airlock: 'Airlock Chamber',
+        eclss: 'ECLSS System',
+        sabatier: 'Sabatier Reactor'
+      };
+      document.getElementById('system-title').textContent = titles[name];
+
+      currentScene = name;
+    }
+
+    // Initialize all scenes
+    async function initializeScenes() {
+      try {
+        // Load scene modules
+        const { AirlockScene } = await import('./scene.js');
+        const { ECLSSScene } = await import('./eclss-scene.js');
+        const { SabatierScene } = await import('./sabatier-scene.js');
+
+        // Create scene instances
+        scenes.airlock = new AirlockScene(document.getElementById('airlock-viewport'));
+        scenes.eclss = new ECLSSScene(document.getElementById('eclss-viewport'));
+        scenes.sabatier = new SabatierScene(document.getElementById('sabatier-viewport'));
+
+        console.log('✓ All systems initialized and ready');
+
+        // Start update loop
+        startUpdateLoop();
+
+      } catch (error) {
+        console.error('Failed to initialize scenes:', error);
+        alert('Error loading 3D systems. Check console for details.');
+      }
+    }
+
+    // Update loop for FPS counter and optional WebSocket updates
+    function startUpdateLoop() {
+      const updateCycle = () => {
+        updateFPS();
+
+        // Try to connect to WebSocket for live updates
+        if (!window.ws && window.location.protocol !== 'file:') {
+          try {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            window.ws = new WebSocket(wsUrl);
+            
+            window.ws.onmessage = (evt) => {
+              try {
+                const snapshot = JSON.parse(evt.data);
+                
+                // Update all scenes with latest snapshot
+                Object.values(scenes).forEach(scene => {
+                  if (scene && typeof scene.update === 'function') {
+                    scene.update(snapshot);
+                  }
+                });
+
+                // Update info panel
+                updateInfoPanel(snapshot);
+                
+              } catch (e) {
+                // Silently ignore parse errors
+              }
+            };
+
+            window.ws.onerror = () => {
+              // Silently ignore connection errors
+            };
+
+          } catch (e) {
+            // Silently ignore WebSocket errors
+          }
+        }
+
+        requestAnimationFrame(updateCycle);
+      };
+
+      updateCycle();
+    }
+
+    // Update info panel with snapshot data
+    function updateInfoPanel(snapshot) {
+      document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+
+      if (currentScene === 'airlock') {
+        const pressure = snapshot.chamber_pressure || 101.3;
+        document.getElementById('param-pressure').textContent = `${pressure.toFixed(1)} kPa`;
+        document.getElementById('param-status').textContent = 
+          pressure > 90 && pressure < 110 ? 'Nominal' : 'Attention';
+        document.getElementById('param-door-inner').textContent = 
+          snapshot.inner_door_open ? 'Open' : 'Sealed';
+        document.getElementById('param-door-outer').textContent = 
+          snapshot.outer_door_open ? 'Open' : 'Sealed';
+      } else if (currentScene === 'eclss') {
+        document.getElementById('param-pressure').textContent = 
+          `${(snapshot.eclss_pressure || 1.0).toFixed(2)} atm`;
+        document.getElementById('param-status').textContent = 
+          snapshot.eclss_status || 'Operational';
+      } else if (currentScene === 'sabatier') {
+        document.getElementById('param-pressure').textContent = 
+          `${(snapshot.reactor_pressure || 2.5).toFixed(1)} MPa`;
+        document.getElementById('param-status').textContent = 
+          `${Math.round((snapshot.reactor_temp || 250))}°C`;
+      }
+    }
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+      Object.values(scenes).forEach(scene => {
+        if (scene && scene.renderer) {
+          const container = scene._container;
+          scene.renderer.setSize(container.clientWidth, container.clientHeight);
+          scene.camera.aspect = container.clientWidth / container.clientHeight;
+          scene.camera.updateProjectionMatrix();
+        }
+      });
+    });
+
+    // Start initialization
+    document.addEventListener('DOMContentLoaded', initializeScenes);
+  </script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+{
+  "hub": { "id": "CoreHub", "position": [0, -2.0, -25] },
+  "nodes": [
+    { "id": "Eclss", "type": "SubsystemPod", "name": "ECLSS MODULE", "color": 4881050, "position": [-20, -2.0, -15], "bind": "eclss" },
+    { "id": "Sabatier", "type": "SubsystemPod", "name": "SABATIER REACTOR", "color": 10177114, "position": [20, -2.0, -15], "bind": "sabatier" },
+    { "id": "LanderWest", "type": "HabitatLander", "name": "HAB LANDER W", "position": [-24, -2.0, -30] },
+    { "id": "LanderEast", "type": "HabitatLander", "name": "HAB LANDER E", "position": [-8, -2.0, -30] },
+    { "id": "ServiceWest", "type": "ServiceModule", "name": "SERVICE WEST", "position": [-31, -2.0, -19], "rotationY": 0.2 },
+    { "id": "ServiceMid", "type": "ServiceModule", "name": "SERVICE MID", "position": [-16, -2.0, -17], "rotationY": -0.1 },
+    { "id": "GreenhouseWest", "type": "GreenhouseTube", "name": "GREENHOUSE A", "position": [-46, -2.0, -24], "rotationY": 0.0, "length": 28 },
+    { "id": "GreenhouseSouth", "type": "GreenhouseTube", "name": "GREENHOUSE B", "position": [8, -2.0, -40], "rotationY": -0.2, "length": 24 },
+    { "id": "PowerDist", "type": "PowerDistribution", "name": "POWER DIST", "position": [35, -2.0, -11] },
+    { "id": "FuelPlant", "type": "FuelProcessing", "name": "FUEL PROCESS", "position": [42, -2.0, -18], "rotationY": 0.8 },
+    { "id": "FuelTank", "type": "StorageSphere", "name": "FUEL", "position": [56, -2.0, -11], "radius": 3.8 },
+    { "id": "OxTank", "type": "StorageSphere", "name": "OXIDIZER", "position": [52, -2.0, -20], "radius": 4.0 },
+    { "id": "Reactor", "type": "NuclearReactor", "name": "NUCLEAR", "position": [52, -2.0, -4], "rotationY": 0.4 },
+    { "id": "Comms", "type": "CommunicationsArray", "name": "COMMS", "position": [-52, -2.0, -21], "rotationY": 0.5 },
+    { "id": "Fueling", "type": "FuelingStation", "name": "FUELING", "position": [49, -2.0, -30], "rotationY": 1.2 }
+  ],
+  "links": [
+    { "from": "CoreHub", "to": "Eclss", "kind": "Tunnel" },
+    { "from": "CoreHub", "to": "Sabatier", "kind": "Tunnel" },
+    { "from": "CoreHub", "to": "LanderWest", "kind": "Tunnel" },
+    { "from": "CoreHub", "to": "LanderEast", "kind": "Tunnel" },
+    { "from": "LanderWest", "to": "ServiceWest", "kind": "Tunnel" },
+    { "from": "LanderEast", "to": "ServiceMid", "kind": "Tunnel" },
+    { "from": "ServiceWest", "to": "GreenhouseWest", "kind": "Tunnel" },
+    { "from": "CoreHub", "to": "GreenhouseSouth", "kind": "Tunnel" },
+    { "from": "CoreHub", "to": "PowerDist", "kind": "TrenchLine" },
+    { "from": "PowerDist", "to": "Reactor", "kind": "TrenchLine" },
+    { "from": "PowerDist", "to": "FuelPlant", "kind": "TrenchLine" },
+    { "from": "FuelPlant", "to": "FuelTank", "kind": "TrenchLine" },
+    { "from": "FuelPlant", "to": "OxTank", "kind": "TrenchLine" },
+    { "from": "FuelPlant", "to": "Fueling", "kind": "TrenchLine" },
+    { "from": "ServiceWest", "to": "Comms", "kind": "TrenchLine" },
+    { "from": "CoreHub", "to": "AirlockEntry", "kind": "Tunnel", "toPosition": [0, -2.0, -8] }
+  ],
+  "solarFarm": { "enabled": false, "position": [-40, -1.8, -40], "rows": 0, "cols": 0, "spacingX": 6, "spacingZ": 8 }
+}

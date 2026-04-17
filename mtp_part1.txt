@@ -1,0 +1,3486 @@
+MTP Specification
+
+
+
+
+                      Module Type Package
+                              Specification
+                    Part 1: General Concept,
+                      Interfaces and Models
+
+
+                       Draft in Member Review
+
+
+
+
+                      Version d0.9 – Date: June 2024
+
+                                  Order No.: 30.002
+ Module Type Package – Part 1: General Concept, Interfaces and Models                                              Version d0.9
+
+
+File name: MTP_Part-1_Overview_30002_d10_May25.docx
+
+This draft is published for testing and review only. It must not be used for
+development purposes.
+Comments to be submitted
+   by Joint Working Group participants directly in the document
+      https://profishare.sharepoint.com/sites/PNOMTPDemo/AcrobatSharedReviews/MTP_Part-
+      1_Overview_MemberReview.pdf,
+   by members of NAMUR, ZVEI, and PI in the excel sheet to be found on PI download
+      area below this document
+until September 06, 2024.
+Prepared by Joint Working Group 1 “Core Specifications” in the Committee E “MTP”.
+
+NOTICE:
+The information contained in this document is subject to change without notice. The material in this document details a PNO
+specification in accordance with the license and notices set forth on this page. This document does not represent a commitment
+to implement any portion of a PNO specification in any company's products.
+The attention of adopters is directed to the possibility that compliance with or adoption of PNO specifications may require use of
+an invention covered by patent rights. PNO shall not be responsible for identifying patents for which a license may be required
+by any PNO specification, or for conducting legal inquiries into the legal validity or scope of those patents that are brought to its
+attention. PNO specifications are prospective and advisory only. Prospective users are responsible for protecting themselves
+against liability for infringement of patents.
+WHILE THE INFORMATION IN THIS DOCUMENT IS BELIEVED TO BE ACCURATE, PNO MAKES NO WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, WITH REGARD TO THIS DOCUMENT INCLUDING, BUT NOT LIMITED TO ANY WARRANTY
+OF TITLE OR OWNERSHIP, IMPLIED WARRANTY OF MERCHANTABILITY OR WARRANTY OF FITNESS FOR
+PARTICULAR PURPOSE OR USE.
+In no event shall PNO be liable for errors contained herein or for indirect, incidental, special, consequential, reliance or
+cover damages, including loss of profits, revenue, data or use, incurred by any user or any third party. Compliance with
+PNO specifications does not absolve manufacturers, from the requirements of safety and regulatory agencies (TÜV, BIA,
+UL, CSA, etc.).
+
+USE OF TRADEMARKS:
+PNO is the owner of several registered trademarks, such as PROFIBUS®, PROFINET®, omlox®, IO-Link®, MTP® and
+others. More detailed terms for the use can be found on the web page www.profibus.com. Please select buttons
+"Downloads / Presentations & logos". In some cases, PNO is the licensee of registered trademarks owned by third
+parties and which may be relevant in regard with products compliant to this document.
+
+PNO shall always be the sole entity that may authorize developers, suppliers and sellers of hardware and software
+to us e certification marks, trademarks or other special designations to indicate compliance with a PNO specification.
+Products developed using a PNO specific ation may claim compliance or conformance with a PNO specification only
+if the hardware and/or software satisfactorily meets the certification requirements set by PNO. Products that do not
+meet these requirements may claim only that the product was based on a PNO specification and must not claim
+compliance or conformance with a PNO specific ation.
+
+COPYRIGHT:
+PNO - PROFIBUS Nutzerorganisation e.V.
+NAMUR - Interessengemeinschaft Automatisierungstechnik der Prozessindustrie
+ZVEI e.V.- Verband der Elektro- und Digitalindustrie
+Any unauthorized use of this publication may violate Copyright Law, Trademark Law and other legal regulations.
+This document contains information which is protected by Copyright. No part of this work covered by Copyright
+herein may be reproduced or used in any form or by any means -graphic, electronic, or mechanical, including
+photocopying, recording, taping, or information storage and ret rieval systems--without permission of the publisher.
+
+PUBLISHER:
+PROFIBUS Nutzerorganisation e.V. (PNO)
+Ohiostr. 8
+76149 Karlsruhe
+Germany
+Phone: +49 (0) 721 / 986 197 0
+Fax: +49 (0) 721 / 986 197 11
+E-mail: info@profibus.com
+Web site: www.profibus.com
+
+ © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                                  Page 2 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+ Module Type Package – Part 1: General Concept, Interfaces and Models                                                Version d0.9
+
+LICENSE AGREEMENT
+1. License
+
+1.1 Subject of this license agreement is this document issued by the Licensor, in electronic form. If applicable, also software
+may be provided.
+
+1.2 The user of this document (Licensee) acquires the license solely from PROFIBUS Nutzerorganisation e.V., having its
+principal place of business in Karlsruhe, Germany (hereinafter referred to as “Licensor”).
+
+1.3 This document is not an industrial standard acknowledged by any standardization body or otherwise and may be further
+enhanced.
+2. Rights and Duties of Licensee
+
+2.1 Licensor hereby grants to Licensee the right to use this document exclusively for developing and supporting products
+compliant with this document. Licensee may copy this document for this purpose and for data backup purposes.
+
+2.2 Licensee shall not be entitled to modify, decompile, reverse engineer or extract any individual parts of this document, unless
+this is permitted by mandatory Copyright Law. Furthermore, Licensee shall not be entitled to remove any alphanumeric
+identifiers, trademarks or copyright notices from this document and, insofar as Licensee is entitled to make copies of this
+document, Licensee shall copy them without alteration.
+
+2.3 Licensee is not entitled to copy and redistribute this document to any third party, except for “Have Made” purposes. All
+copies must be obtained on an individual basis, directly from the website www.de.profibus.com or www.profibus.com or upon
+request from the Licensor.
+3. Liability of Licensor
+
+3.1 Licensor shall have no obligation to enhance the document and shall assume no liability in case the document or future
+versions thereof shall not be approved as an industrial standard.
+3.2 Licensor’s liability for defects as to quality or title of this document, especially in relation to the correctness or absence
+of defects or the absence of claims or third-party rights or in relation to completeness, usability and/or fitness for purpose
+are excluded, except for cases involving gross negligence, willful misconduct or fraudulent concealment of a defect.
+
+3.3 Any further liability is excluded unless required by law, e.g. in cases of personal injury or death, willful misconduct,
+gross negligence, or in case of breach of fundamental contractual obligations. The damages in case of breach of
+fundamental contractual obligations is limited to the contract-typical, foreseeable damage if there is no willful misconduct or
+gross negligence.
+
+4. Place of Jurisdiction and Applicable Law
+
+4.1 The sole place of jurisdiction shall be the principal place of business of Licensor.
+
+4.2 All relations arising out of the contract shall be governed by the substantive law of Germany, to the exclusion of the United
+Nations Convention on Contracts for the International Sale of Goods (CISG).
+
+
+
+
+In this specification the following key words (in bold text) will be used:
+may:              indicates flexibility of choice with no implied preference.
+should:           indicates flexibility of choice with a strongly preferred implementation.
+shall:            indicates a mandatory requirement. Designers shall implement such mandatory
+                  requirements to ensure interoperability and to claim conformance with this specification.
+
+
+
+
+ © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                                     Page 3 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+Module Type Package – Part 1: General Concept, Interfaces and Models                                           Version d0.9
+
+
+                                                       CONTENTS
+1     Scope ................................................................................................................... 11
+2     List of affected patents ........................................................................................... 12
+3     Disclaimer ............................................................................................................. 13
+4     Normative references ............................................................................................. 14
+5     Terms and definitions ............................................................................................. 15
+6     Abbreviations ........................................................................................................ 17
+7     Concept of the Module Type Package ...................................................................... 18
+  7.1     Introduction and Conceptional Overview .......................................................... 18
+  7.2     Phases for PEA Integrators and Plant Operators ............................................... 18
+  7.3     Phases for PEA manufacturers ....................................................................... 20
+  7.4     Role of the Module Type Package ................................................................... 20
+8   List of MTP Specification Parts ............................................................................... 21
+    8.1   MTP Specification – Part 2: Process Displays ................................................... 21
+    8.2   MTP Specification – Part 3: Base Interfaces ..................................................... 21
+    8.3   MTP Specification – Part 4: Automation Services and Process Values ................ 22
+    8.4   MTP Specification – Part 5: Runtime and Communication .................................. 22
+    8.5   MTP Specification – Part 5.1: Runtime and Communication – Open Platform
+          Communications – Unified Architecture ............................................................ 22
+  8.6     MTP Specification – Part 6: Alarms and Events ................................................ 23
+9   Principles and Conventions for the Module Type Package Modelling ........................... 24
+  9.1     Principles and Conventions for AutomationML Definitions .................................. 24
+    9.1.1      Using of Attributes fields Value and DefaultValue ....................................... 24
+    9.1.2      Mandatory use of Object ID of all AutomationML Objects ............................ 24
+  9.2     Principle Model Architecture and Package Format ............................................. 24
+  9.3     Aspect-oriented Model Extensions and their Model Definitions ........................... 24
+  9.4     Basic Conventions for Model Definitions .......................................................... 26
+    9.4.1      Object Oriented Modelling ........................................................................ 26
+    9.4.2      List of general fields used in the Model Definitions ..................................... 26
+    9.4.3      Conventions for System Unit Classes ........................................................ 27
+    9.4.4      Conventions for Interface Classes ............................................................ 28
+    9.4.5      Conventions for Role Classes .................................................................. 29
+    9.4.6      Conventions for Attribute Types ................................................................ 30
+  9.5     Basic Conventions for Library Definitions ......................................................... 31
+    9.5.1      List of general fields used in the Library Definitions .................................... 31
+    9.5.2      Conventions for System Unit Class Library ................................................ 31
+    9.5.3      Conventions for Interface Class Library ..................................................... 32
+    9.5.4      Conventions for Role Class Library ........................................................... 32
+    9.5.5      Conventions for Attribute Type Library ...................................................... 33
+  9.6     Basic Conventions for Instance Hierarchy Definitions ........................................ 34
+10 MTP Versioning ..................................................................................................... 35
+  10.1 Versioning of the Specification Documents ....................................................... 35
+  10.2 Versioning Scheme ........................................................................................ 35
+  10.3 Concept of Aspects and Profiles ...................................................................... 36
+   10.3.1     Aspect Models ........................................................................................ 36
+   10.3.2     Profiles .................................................................................................. 36
+© Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                          Page 4 of 86 Pages
+                 Draft for Member Review. Do not Claim Conformance!
+Module Type Package – Part 1: General Concept, Interfaces and Models                                    Version d0.9
+
+     10.4 Representation of Versioning Information in AutomationML ................................ 37
+11    MTP Aspect – Manifest .......................................................................................... 38
+  11.1 Versioning and Profile Information ................................................................... 38
+  11.2 Concept of the Manifest and its Table of Content .............................................. 38
+  11.3 Concept of ID Links ....................................................................................... 38
+  11.4 Concept of LinkedObjects ............................................................................... 39
+  11.5 Multilingual Texts........................................................................................... 39
+  11.6 Overview of Aspect Definitions ........................................................................ 39
+  11.7 Aspect-related Model Definitions ..................................................................... 41
+   11.7.1   InstanceHierarchy ModuleTypePackage .................................................... 41
+   11.7.2   SystemUnitClassLibrary MTPSUCLib ........................................................ 42
+   11.7.3   SystemUnitClass ModuleTypePackage ...................................................... 43
+   11.7.4   SystemUnitClass MTPSet ........................................................................ 44
+   11.7.5   SystemUnitClass LinkedObject ................................................................. 45
+   11.7.6   InterfaceClassLibrary MTPICLib ............................................................... 46
+   11.7.7   InterfaceClass AspectSetReference .......................................................... 47
+   11.7.8   AttributeTypeLibrary MTPATLib ................................................................ 48
+   11.7.9   AttributeType IDReferenceType ................................................................ 49
+   11.7.10 AttributeType AspectIDAttributeType......................................................... 50
+   11.7.11 AttributeType IDLinkAttributeType ............................................................ 51
+   11.7.12 AttributeType RefIDAttributeType ............................................................. 52
+   11.7.13 AttributeType StaticValueAttributeType ..................................................... 53
+   11.7.14 AttributeType MultiLanguageTextAttribute ................................................. 54
+   11.7.15 AttributeType SemanticVersionAttributeType ............................................. 55
+   11.7.16 AttributeType ModuleTypePackageRevisionType ....................................... 56
+   11.7.17 AttributeType DeviceRevisionType............................................................ 57
+  11.8 Aspect-related Workflow Definitions................................................................. 58
+   11.8.1   Overview of the Workflows for Type and Version Verification ....................... 58
+   11.8.2   Type Verification Workflow ....................................................................... 58
+   11.8.3   Version Verification Workflow ................................................................... 58
+   11.8.4   Instance Verification Workflow.................................................................. 60
+   11.8.5   Internal Configuration Changes in the PEA ................................................ 60
+12 MTP Aspect – AttachmentSet.................................................................................. 61
+  12.1 Versioning and Profile Information ................................................................... 61
+  12.2 Concept of Attachments ................................................................................. 61
+  12.3 Overview of Aspect Definitions ........................................................................ 61
+  12.4 Aspect-related Model Definitions ..................................................................... 63
+   12.4.1  InstanceHierarchy Attachments ................................................................ 63
+   12.4.2  SystemUnitClassLibrary MTPAttachmentSUCLib ........................................ 63
+   12.4.3  SystemUnitClass AttachmentSet............................................................... 64
+   12.4.4  SystemUnitClass AttachmentGroup .......................................................... 65
+   12.4.5  InterfaceClassLibrary MTPAttachmentICLib ............................................... 66
+   12.4.6  InterfaceClass AttachmentReference ........................................................ 67
+13 MTP Aspect – TextSet............................................................................................ 68
+     13.1     Versioning and Profile Information ................................................................... 68
+     13.2     Conceptual Aspect Details .............................................................................. 68
+     13.3     Overview of Aspect Definitions ........................................................................ 68
+
+© Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                         Page 5 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+ Module Type Package – Part 1: General Concept, Interfaces and Models                                         Version d0.9
+
+  13.4 Aspect-related Model Definitions ..................................................................... 70
+   13.4.1  InstanceHierarchy Texts .......................................................................... 70
+   13.4.2  SystemUnitClassLibrary MTPTextSUCLib .................................................. 70
+   13.4.3  SystemUnitClass TextSet ........................................................................ 71
+   13.4.4  SystemUnitClass Text ............................................................................. 72
+   13.4.5  SystemUnitClass TextDefinition ................................................................ 73
+   13.4.6  SystemUnitClass EnumDefinition .............................................................. 74
+   13.4.7  SystemUnitClass EnumItem ..................................................................... 75
+   13.4.8  RoleClassLibrary MTPTextRCLib .............................................................. 76
+   13.4.9  RoleClass HasTextReference ................................................................... 77
+   13.4.10 RoleClass HasEnumDefinition .................................................................. 78
+   13.4.11 AttributeTypeLibrary MTPTextATLib .......................................................... 79
+   13.4.12 AttributeType TextRefAttributeType .......................................................... 80
+14 MTP Packaging Format .......................................................................................... 81
+  14.1 Physical Package of the Module Type Package ................................................ 81
+  14.2 Logical Model of the Module Type Package ...................................................... 81
+  14.3 Source Document Information of the Package .................................................. 83
+  14.4 Extensibility .................................................................................................. 83
+15 Requirements for Certification Tests ........................................................................ 84
+Bibliography ................................................................................................................. 85
+
+
+
+
+ © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                              Page 6 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+ Module Type Package – Part 1: General Concept, Interfaces and Models                                        Version d0.9
+
+
+                                                        FIGURES
+Figure 1 – Engineering phases of Modular Plants (source: NAMUR/ZVEI) .......................... 18
+Figure 2 – Example of an integration architecture of PEAs into the POL using client-
+server structures .......................................................................................................... 19
+Figure 3 – Role of the Module Type Package within the information exchange between
+PEA engineering and POL engineering in a fully automated process instead of manual
+document supported approach ....................................................................................... 20
+Figure 4 – Conceptional relations between the Package, its Aspects, profiles and
+individual definitions in the MTP Specification ................................................................. 36
+Figure 5 – Overview of the model and DataAssembly definitions of the Manifest ................. 40
+Figure 6 – Revision information of a PEA ........................................................................ 59
+Figure 7 – Overview of the model and DataAssembly definitions of the AttachmentSet ........ 62
+Figure 8 – Overview of the model and DataAssembly definitions of the TextSet .................. 69
+Figure 9 – Exemplary structure of an MTP according to the Open Packaging
+Conventions ................................................................................................................. 82
+
+
+
+
+ © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                             Page 7 of 86 Pages
+                 Draft for Member Review. Do not Claim Conformance!
+Module Type Package – Part 1: General Concept, Interfaces and Models                             Version d0.9
+
+
+                                                   TABLES
+Table 1 – List of common fields within model definition templates ...................................... 26
+Table 2 – Template for System Unit Class Definitions....................................................... 27
+Table 3 – Description of the columns used to define SUCs ............................................... 27
+Table 4 – Template for Interface Class Definitions ........................................................... 28
+Table 5 – Description of the columns used to define ICs ................................................... 28
+Table 6 – Template for Role Class Definitions ................................................................. 29
+Table 7 – Description of the columns used to define RCs ................................................. 29
+Table 8 – Template for Attribute Type Definitions ............................................................. 30
+Table 9 – Description of the columns used to define ATs .................................................. 30
+Table 10 – List of common fields within library definition templates .................................... 31
+Table 11 – Template for System Unit Class Library Definitions .......................................... 31
+Table 12 – Template for Interface Class Library Definitions............................................... 32
+Table 13 – Template for Role Class Library Definitions ..................................................... 32
+Table 14 – Template for Attribute Type Library Definitions ................................................ 33
+Table 15 – Template for Instance Hierarchy Definitions .................................................... 34
+Table 16 – List of common fields within model definition templates .................................... 34
+Table 17 – Profile and version information of the MTP aspect Manifest .............................. 38
+Table 18 – Instance Hierarchy Definition of the IH ModuleTypePackage............................. 41
+Table 19 – Library Definition of the SUCL MTPSUCLib ..................................................... 42
+Table 20 – Model definition of the SUC ModuleTypePackage ............................................ 43
+Table 21 – Model definition of the SUC MTPSet .............................................................. 44
+Table 22 – Model definition of the SUC LinkedObject ....................................................... 45
+Table 23 – Library Definition of the ICL MTPICLib............................................................ 46
+Table 24 – Model definition of the IC AspectSetReference ................................................ 47
+Table 25 – Library Definition of the ATL MTPATLib .......................................................... 48
+Table 26 – Model definition of the AT IDReferenceType ................................................... 49
+Table 27 – Model definition of the AT AspectIDAttributeType ............................................ 50
+Table 28 – Model definition of the AT IDLinkAttributeType ................................................ 51
+Table 29 – Model definition of the AT RefIDAttributeType ................................................. 52
+Table 30 – Model definition of the AT StaticValueAttributeType ......................................... 53
+Table 31 – Model definition of the AT MultiLanguageTextAttribute ..................................... 54
+Table 32 – Model definition of the AT SemanticVersionAttributeType ................................. 55
+Table 33 – Model definition of the AT ModuleTypePackageRevisionType ........................... 56
+Table 34 – Model definition of the AT DeviceRevisionType ............................................... 57
+Table 35 – Profile and version information of the MTP aspect AttachmentSet ..................... 61
+Table 37 – Library definition of the SUCL MTPAttachmentSUCLib ..................................... 63
+Table 38 – Model definition of the SUC AttachmentSet ..................................................... 64
+Table 39 – Model definition of the SUC AttachmentGroup ................................................. 65
+Table 40 – Library definition of the SUCL MTPAttachmentICLib ........................................ 66
+Table 41 – Model definition of the IC AttachmentReference .............................................. 67
+
+© Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                   Page 8 of 86 Pages
+               Draft for Member Review. Do not Claim Conformance!
+Module Type Package – Part 1: General Concept, Interfaces and Models                             Version d0.9
+
+Table 42 – Profile and version information of the MTP aspect TextSet ............................... 68
+Table 43 – Instance Hierarchy Definition of the IH Texts ................................................... 70
+Table 44 – Library definition of the SUCL MTPTextSUCLib ............................................... 70
+Table 45 – Model definition of the SUC TextSet ............................................................... 71
+Table 46 – Model definition of the SUC Text.................................................................... 72
+Table 47 – Model definition of the SUC TextDefinition ...................................................... 73
+Table 48 – Model definition of the SUC EnumDefinition .................................................... 74
+Table 49 – Model definition of the SUC EnumItem ........................................................... 75
+Table 50 – Library definition of the SUCL MTPTextRCLib ................................................. 76
+Table 51 – Model definition of the RC HasTextReference ................................................. 77
+Table 52 – Model definition of the RC HasEnumDefinition ................................................ 78
+Table 53 – Library definition of the ATL MTPTextATLib .................................................... 79
+Table 54 – Model definition of the AT TextRefAttributeType .............................................. 80
+Table 55 – Definition of the SourceDocumentInformation .................................................. 83
+
+
+
+Revision Log
+
+
+ Version            Originator               Date              Change Note / History / Reason
+ 0.9                JWG Core Specification   15.02.2024        Member Review version
+
+
+
+
+© Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                   Page 9 of 86 Pages
+               Draft for Member Review. Do not Claim Conformance!
+ 1                                           ____________
+
+ 2                                  MODULE TYPE PACKAGE
+ 3
+ 4                      Part 1: General Concept, Interfaces and Models
+ 5
+ 6                                        INTRODUCTION
+ 7   This standard specifies general concepts for the automated integration of intelligent equipment,
+ 8   called Process Equipment Assemblies (PEAs), in higher-level automation systems, called
+ 9   Process Orchestration Layers (POL) and provides the basic definitions for the specification of
+10   interfaces, information models and workflows. The term of “process” in Process Equipment
+11   Assembly and Process Orchestration Layer refers to all kind of processes independent of any
+12   concrete industry, e.g., process, logistics or manufacturing industry.
+
+13   These concepts can be used for the automation of modular production systems as well as for
+14   the integration of automated units into conventional plants (package units). The focus of this
+15   specification is on the automation of modular production systems in different industries.
+16   Driving forces behind this progress are…
+17          … enhancing the efficiency due to reusing and reutilizing not only engineering efforts
+18           but as well physical equipment,
+19          … increasing flexibility and adaptability        of   production systems   due to the
+20           exchangeability of equipment and
+21          … reducing time-to-market due to the ability to combine pre-automated, pre-tested and
+22           possibly pre-qualified equipment.
+23   The engineering workflow of modular production systems considers both the automation
+24   technology of the Process Equipment Assemblies, called PEA engineering, and their integration
+25   into a Process Orchestration Layer, referred to as POL engineering. This series of standards
+26   defines and specifies the Module Type Package (MTP), which semantically describes the
+27   interfaces and their functions of the automation technology of PEAs thus enabling the
+28   integration of the PEAs into a POL.
+29
+
+
+30   This standard part focuses on the following aspects:
+
+31          basic concept of automation technology for Modular Plants and modular equipment
+32          conceptual architecture and structure of the MTP considering various aspects
+33          definition and description of the MTP Manifest
+34          definition and description of the MTP packaging conventions
+35          definition and description of the MTP AttachmentSet
+36          definition and description of the MTP TextSet
+     Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+
+37                                   MODULE TYPE PACKAGE
+38
+39                    Part 1: General Concepts, Interfaces and Models
+40   1   Scope
+
+41   This document specifies the basic conceptual elements for the Module Type Package concept.
+
+42   In the series of specifications for the Module Type Package concept, interfaces, information
+43   models and workflows are specified in order to be able to implement the use cases for the
+44   automation of Process Equipment Assemblies and, in particular, production systems in all
+45   industries that work with automated systems. It is important to note, that this series of standards
+46   does explicitly not specify implementation specific aspects of the PEA and POL software. The
+47   focus is on the automation interfaces, their functionality and semantic description.
+
+48   The stakeholders of this series of specifications are Automation Suppliers for PEAs as well as
+49   POL solutions, PEA manufacturer, System Integrators and Plant Owners/Operators.
+
+50   For automation suppliers with focus on PEAs these documents provide assistance with regard
+51   to the necessary information content and the MTP export interface for their integrated
+52   development environments.
+
+53   For automation suppliers with focus on POLs these documents provide semantic and syntactic
+54   information to be able to automate the integration of PEAs into their POL products.
+
+55   For PEA manufacturers, these documents provide information on how to improve the integration
+56   of their products. They can provide an easy-to-use interface and description that allows their
+57   PEAs to be integrated into POLs faster, easier and with fewer errors, giving them an advantage
+58   over competitors who do not offer an MTP-compliant product.
+
+59   For system integrators, these documents provide information about the functionality of PEAs,
+60   which supports the selection of the right equipment for the required functionality. The functional
+61   description within the MTP provides important information, which are used by the system
+62   integrator to integrate several PEAs into a running production system.
+
+63   For plant owner/operators, these documents provide information models and meaningful
+64   definitions that can be used to formulate functional requirements for a desired PEA and make
+65   it possible to compare PEAs already available on the market to determine whether they are
+66   suitable for the desired applications.
+
+67   It is possible that several stakeholders are represented by one and the same person or
+68   organization - e.g., a plant owner/operator can also be the PEA manufacturer of its own PEAs.
+
+69   Modularization of production systems has gained prominence across industries, spawning
+70   various research initiatives and definitions. Process Equipment Assemblies (PEAs) are
+71   classified as pre-automated integrable units with dedicated automation systems and integration
+72   interfaces. Following a 'graybox' approach, PEAs encapsulate internal monitoring data while
+73   maintaining minimal inter-PEA dependencies and self-protection mechanisms. Future
+74   developments may enable PEAs to communicate directly, facilitating both orchestrated and
+75   choreographed functions while optimizing instrumentation.
+
+76   More details about PEAs, POLs and the general concept of the MTP are provided in Section 7.
+77   The contents of other parts of this specification are outlined in Section 8.
+78
+
+
+
+     © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                      Page 11 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+     Module Type Package – Part 1: General Concept, Interfaces and Models                    Version d0.9
+
+
+79   2     List of affected patents
+
+80   This section contains a list of relevant patents that are known or reasonably should be known
+81   by the expert of the working groups. The background and the purpose of this rule is to avoid,
+82   that technical material is proposed by members of the PNO, that is also subject of a patent of
+83   members. It is not the intention to ask for the result of a patent research.
+
+84   PROFIBUS&PROFINET International does not guarantee the completeness of this list.
+
+      Nr    Topic                                 Company   Reference no. of initial     Reference no. of
+                                                            application (application     s upplementary
+                                                            date)                        application
+      1     Schnittstelle zur Konfiguration von   Siemens   EP16170003A·2016-05-         2016P08579 CN
+            Anwenderprogrammen in speicher-                 17                           2016P08579EPDE
+            programmierbaren Steuerungen                                                 2016P08579EPFR
+                                                                                         2016P08579EPGB
+                                                                                         2016P08579EPIT
+                                                                                         2016P08579 US
+                                                                                         2016P08579EP
+
+
+85
+86
+
+
+
+
+     © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                           Page 12 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                     Version d0.9
+
+
+87    3   Disclaimer
+
+88    PROFIBUS Nutzerorganization e.V. (PROFIBUS user organization, hereinafter in this disclaimer
+89    referred to as “PNO”) has taken utmost care in the preparation of this document and compiled all
+90    information to the best of its knowledge. This document is nevertheless based on present knowledge,
+91    is of an informative character and is provided on the basis of liability exclusion. This document may be
+92    subject to change, enhancement or correction in the future without any expressive reference.
+
+93    This document has no normative character. It may be useful in certain operating environments,
+94    in certain technical constellations or when used in certain countries to deviate from the given
+95    recommendations for action. In this case, the installer and operator of the installation should
+96    weigh up the advantages and disadvantages of the recommendations made in the specific
+97    application and, if deemed appropriate, decide on the implementation of a different solution if
+98    necessary.
+
+ 99   The user may not distribute, rent or make available the Information in any other way to any third
+100   party at any time.
+
+101   Any liability for defects as to quality or title of the information, especially in relation to the
+102   correctness or absence of defects or the absence of claims or third-party rights or in relation to
+103   completeness and/or fitness for purpose are excluded, except for cases involving gross
+104   negligence, willful misconduct or fraudulent concealment of a defect. Any further liability is
+105   excluded unless required by law, e.g. in cases of personal injury or death, willful misconduct,
+106   gross negligence, or in case of breach of fundamental contractual obligations.
+107
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                          Page 13 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models            Version d0.9
+
+
+108   4   Normative references
+
+109   The following referenced documents are indispensable for the application of this standard:
+
+       DIN SPEC 91406:2019-12 Automatic identification of physical objects and information on
+       physical objects in IT systems, particularly IoT systems; Text in German and English
+       IEC 61987*CEI 61987 (all parts) Industrial-process measurement and control; Data
+       structures and elements in process equipment catalogues
+       IEC 62714-1:2018-04 Engineering data exchange format for use in industrial automation
+       systems engineering; Automation markup language
+       ISO/IEC 29500-2:2021-08 Document description and processing languages; Office Open
+       XML file formats; Part 2: Open packaging conventions
+       IETF RFC 4122:2005-07 A Universally Unique Identifier (UUID) URN Namespace
+       Semantic Versioning 2.0.0 | Semantic Versioning http://www.semver.org (accessed on
+       10.11.2021)
+
+110
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                   Page 14 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                                    Version d0.9
+
+
+111   5    Terms and definitions
+
+112   For the purposes of this document, the following terms and definitions apply.
+
+113   5.1
+114   Automation Service
+115   Standardized software interface with predefined behavior that encapsulates complex process
+116   functions of a PEA for rapid integration into a POL
+
+117   EXAMPLE     Technical function “motor on” of an actuator is translated into “agitation”.
+
+118   Note 1 to entry:   Typically, Services translate technic al functions into domain-specific functions.
+
+119   Note 2 to entry:   Within this document, the term Serv ice is used corresponding to the term Autom ation Service.
+
+120   5.2
+121   Base Function
+122   Function that is used in several interface families
+
+123   5.3
+124   Data Assembly
+125   Standardized interface for the communication between PEA and POL
+
+126   Note 1 to entry: Within this specification, the term DataAssembly is used as common term for all specified interfaces
+127   between PEA and POL. The concrete SUC DataAssembly represents the abstract interface definition element.
+
+128   5.4
+129   Globally Unique Identifier
+130   GUID
+131   Identification tag that allows the software- and system-independent unambiguous identification
+132   of model contents in the MTP as a Globally Unique Identifier according to RFC 4122
+
+133   5.5
+134   Human Machine Interface
+135   HMI
+136   User interface for operating and monitoring of a process control system or a plant
+
+137   5.6
+138   Interface
+139   Variables of a DataAssembly for communication between POL and PEA
+
+140   5.7
+141   Modularization
+142   Structuring of a complex technical system into reusable units that can be flexibly arranged to
+143   build systems
+
+144   5.8
+145   Modular Plant
+146   MP
+147   Highest modular aggregation form consisting of at least one PEA implementing a production
+148   plant
+
+149   [SOURCE: adapted from VDI 2776-1 [5]]
+
+150   5.9
+151   Module Type Package
+152   MTP
+153   Formal description of the interfaces and functions of the automation of a PEA
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                        Page 15 of 86 Pages
+                         Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                             Version d0.9
+
+154   5.10
+155   ObjectID
+156   AutomationML Property ID of the AutomationML Object
+
+157   Note 1 to entry:   Shall be formatted following the RFC 4122
+
+158   5.11
+159   Orchestration
+160   Selection, combination, parameterization, sequencing, operation, monitoring, and control of
+161   PEAs and their Automation Services to implement a process in a Modular Plant. This includes
+162   alarm management, data capture and reporting
+
+163   5.12
+164   Process Equipment Assembly
+165   PEA
+166   Automated and, from a safety point of view largely autonomous unit, that represents a process
+167   step or provides infrastructure within a Modular Plant
+
+168   Note 1 to entry: The term Process Equipment Assembly is to be understood in a more general way than it is in VDI
+169   2776-1 and VDI/VDE/NAMUR 2658. The term Process refers to process es of sev eral industries and is explic itly not
+170   only related to the process industries (see also Section 7.1).
+
+171   5.13
+172   Process Orchestration Layer
+173   POL
+174   Automation and information technology level for the operation of Modular Plants. Capable of
+175   integrating and orchestrating multiple PEAs
+
+176   Note 1 to entry: The term Process Orc hestration Layer is to be understood in a more general way than it is in VDI
+177   2776-1 and VDI/VDE/NAMUR 2658. The term Process refers to process es of sev eral industries and is explic itly not
+178   only related to the process industries (see also Section 7.1).
+
+179   5.14
+180   Process
+181   A sequence of chemical, physical, or biological activities for the conversion, transport or storage
+182   of material or energy
+
+183   [SOURCE: IEC 61512-1]
+
+184   5.15
+185   Tag
+186   process-control identifier for variables and function groups
+187
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                  Page 16 of 86 Pages
+                         Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models         Version d0.9
+
+
+188   6     Abbreviations
+
+189   The following abbreviations are used throughout this standard:
+
+190   CAEX          Computer Aided Engineering Exchange
+191   GUID          Globally Unique Identifier
+192   HMI           Human Machine Interface
+193   MP            Modular Plant
+194   MTP           Module Type Package
+195   OPC           Open Packaging Conventions
+196   OPC UA        Open Platform Communications – Unified Architecture
+197   PEA           Process Equipment Assembly
+198   POL           Process Orchestration Layer
+
+199   The following abbreviations are used throughout this standard for AutomationML terms
+200   (according to IEC 62714-1):
+
+201   AT            AttributeType
+202   ATL           AttributeTypeLibrary
+203   EI            ExternalInterface
+204   IC            InterfaceClass
+205   ICL           InterfaceClassLibrary
+206   IE            InternalElement
+207   IH            InstanceHierarchy
+208   RC            RoleClass
+209   RCL           RoleClassLibrary
+210   SRC           SupportedRoleClass
+211   SUC           SystemUnitClass
+212   SUCL          SystemUnitClassLibrary
+213
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 17 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models              Version d0.9
+
+
+214   7     Concept of the Module Type Package
+
+215   7.1    Introduction and Conceptional Overview
+
+216   Modularization represents a significant step towards accelerating the construction and planning
+217   of plants. By using industry-specific Process Equipment Assemblies (PEAs) that form ready-
+218   made, self-contained functional units consisting of the mechanical construction, automation
+219   hardware and software, the effort to plan and build plants can be significantly reduced. The
+220   reuse of proven PEAs avoids errors in early phases, which in turn leads to cost and time
+221   savings. In addition to the desired scalability through the addition and removal of PEAs
+222   (numbering up), a better data basis is also created for cost estimation for the planning and
+223   construction of the plants, as usual efforts are merely repeated in a new configuration.
+
+224   This concept of constructing and planning a plant leads to significantly changed phases in the
+225   engineering and operation which are visualized in Figure 1. The engineering process is
+226   separated into the engineering of single PEAs (PEA engineering) and the assembly of a Modular
+227   Plant by integrating PEAs into a POL (POL engineering). At the end of the PEA engineering
+228   phase an MTP file is created, which semantically describes the automation interfaces, the
+229   provided Services and other information of the PEA. This MTP file enables the automation of
+230   the PEA integration during the POL engineering.
+
+
+
+
+231
+
+
+232            Figure 1 – Engineering phases of Modular Plants (source: NAMUR/ZVEI)
+
+233   The phases of the PEA manufacturer (PEA engineering) and PEA integrator / plant operator
+234   (POL engineering/operation) are strictly decoupled from each other. The added value for PEA
+235   manufacturer lies in the multiple application of a PEA design; the added value for PEA
+236   integrator/plant operator lies in the reduced project time for the entire plant.
+
+237   7.2    Phases for PEA Integrators and Plant Operators
+
+238   If several PEAs are combined and physically connected to form a plant, it becomes necessary
+239   to integrate these PEAs into a POL within the framework of POL engineering (Figure 1).
+
+240   During the import of the several PEAs the POL must ensure that all objects of a PEA to be
+241   integrated are clearly distinguishable within the context of the POL, for example by assigning a
+242   PEA-specific prefix.
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                    Page 18 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+243   Basically, the process of Orchestration covers the entire engineering process of composing and
+244   integrating PEAs, recipe creation, commissioning and finally operating and monitoring the plant.
+245   It is divided into POL engineering and POL operation.
+
+246   POL Engineering
+
+247   POL engineering consists of design, planning, implementation, simulation, and validation of an
+248   orchestrated production environment. The concrete steps to be executed during POL
+249   Engineering vary in different industries. In the engineering phase the term “Orchestration” is
+250   used to describe the linking of PEAs into a meaningful processing facility. This includes for
+251   example a topology, workflows and interlocks, the overarching logic, signals, parameters,
+252   naming, and versioning.
+
+253   During POL engineering, the PEAs are integrated into the POL (Figure 1, right-hand side).
+254   Finally, the PEA description is imported into the POL via the MTP, and the necessary
+255   configuration is generated within the functional subsystems of the POL for each required PEA.
+256   This includes both the interface to the information model of the PEA and the digital
+257   representation of it in the various functional subsystems of the POL. For example, the digital
+258   representation of a PEA in the functional subsystem HMI (Human Machine Interface) consists
+259   of process displays to be used to monitor and operate the PEA.
+
+260   In addition, the PEA-spanning procedural process is configured in the POL. The procedure
+261   control for the timely retrieval and monitoring of the Automation Services of the PEAs is created.
+262   The control of the Services of the PEAs is parameterized and, if applicable, interlocking logic
+263   across PEAs is generated.
+
+264   POL Operation
+
+265   In the POL operation (Figure 2), the plant is commissioned in its entirety with its PEAs. For this
+266   purpose, the physical communication is mapped and parameterized during the provisioning.
+267   Previously created recipes and Services can be started. The operating screen aspects of the
+268   Modular Plant and the PEAs are displayed with corresponding dynamic values. The plant and
+269   thus the running process can be operated and observed within the operation.
+
+
+
+
+270
+271     Figure 2 – Example of an integration architecture of PEAs into the POL using client-
+272                                      server structures
+273
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                      Page 19 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models               Version d0.9
+
+274   7.3   Phases for PEA manufacturers
+
+275   PEA Engineering
+
+276   Each PEA is developed once (Figure 1, left-hand side). This includes both the physical design
+277   of the PEA and the information technology interface to higher-level systems. In addition, there
+278   is the engineering of the control logic and the human-machine interfaces. The engineering
+279   corresponds to that of a small plant, with the difference that the PEA should be designed
+280   generically in its function for different use cases. The data generated in engineering about the
+281   structure, the information interfaces provided by the PEA, the Services, the associated process
+282   displays and alarms are stored in the MTP.
+
+283   7.4   Role of the Module Type Package
+
+284   Key of the Module Type Package concept is the package itself which enables the automated
+285   integration of the PEA into the POL. As indicated within Figure 1, it contains information out of
+286   the PEA engineering, which are mandatory to be available within the POL engineering.
+
+287   In the past, such an information exchange was carried out with proprietary formats like PDF
+288   and Excel documents as shown in Figure 3. With the MTP all communication information as
+289   well as the information for POL functionality like visualization, reporting, archiving, alarming
+290   and other semantical described contents allows a completely automated integration process.
+291   This enables an avoidance of transcription errors and errors caused by lack of concentration
+292   due to monotonous engineering work.
+
+
+
+
+293
+
+
+294    Figure 3 – Role of the Module Type Package within the information exchange between PEA
+295    engineering and POL engineering in a fully automated process instead of manual document
+296                                      supported approach
+
+297   To implement this automated integration process, the MTP concept consists of several
+298   standardized interface elements, communication mappings, semantically enriching information
+299   models and workflows which are split into different parts of the specification.
+300
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                     Page 20 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+
+301   8     List of MTP Specification Parts
+
+302   This section provides a list of all currently available MTP specification parts (except from the
+303   one on hand), which are available to implement the integration of a PEA into various functional
+304   subsystems of the POL. The concepts, interfaces and model elements for each functional area
+305   are specified in one individual part of the MTP specification. In the current version of the
+306   specification the following parts are available.
+
+307   8.1     MTP Specification – Part 2: Process Displays
+
+308   Within this part of the MTP specification, the concepts and model elements are specified, which
+309   are necessary to monitor and control PEAs from the central HMI system within the POL. The
+310   challenge regarding the operability and observability of the process distributed over several
+311   PEAs is both the automatic generation of process displays, and the implementation of a uniform
+312   “look-and-feel” of a plant HMI.
+
+313   Since the PEA manufacturer is responsible for the planning, construction, and programming of
+314   the PEA, he designs the process displays using the objects defined in this and the other parts
+315   of this specification series. However, at this point, the manufacturer does not have knowledge
+316   of the operating picture library of the POL that is usually used project-specifically in industrial
+317   plants. The generation of the PEA-specific process displays in the POL of the entire plant can
+318   therefore only take place after integration of the PEA in the POL engineering. During the import
+319   into the POL, the generic process displays objects are replaced by concrete, target system-
+320   specific symbols.
+
+321   For the implementation of the PEA-specific process displays in project-specific standardized
+322   process display objects, the process displays must be available in a representation-independent
+323   description form. This description contains information about the type of process equipment to
+324   be displayed as well as its position and size. This information can be evaluated by an algorithm
+325   which places the project-dependent control screen elements in the desired representation and
+326   position on the HMI in the POL and links them to the corresponding variables for communication
+327   with the PEA control system. The use of a library concept requires that the library is available
+328   both in the engineering tool of the PEA manufacturer and in the engineering tool for the POL.
+
+329   All information developed in PEA engineering and required during POL engineering is stored in
+330   the MTP. The corresponding information models are defined in the MTP Specification – Part 2.
+
+331   8.2     MTP Specification – Part 3: Base Interfaces
+
+332   This part of the MTP specification specifies the concepts, base interfaces, and the model
+333   elements, which are necessary to access dynamic data like status information and process
+334   values of a PEA from the POL.
+
+335   Usually, process displays of PEAs or the entire plant use symbols and faceplates for sensor
+336   and actuator objects. To be able to transport state and status information or to control them
+337   manually, interfaces are specified for those objects.
+
+338   First base interfaces for control modules like valves, drives and controls, as well as indicators
+339   or manual operations are specified. Furthermore, some blueprints for complexity reduction are
+340   described for the interfaces of MTP Specification Part 3.
+
+341   The control module DataAssembly definitions of MTP Specification Part 3 are used in MTP
+342   Specification Part 4 as well to be referenced as required equipment.
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                       Page 21 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+343   8.3   MTP Specification – Part 4: Automation Services and Process Values
+
+344   With part 4 of the MTP specification, three new building blocks of the MTP concept are
+345   introduced.
+
+346   Automation Services, which act as procedural function abstractions, are used in sequential
+347   execution control engines within the POL and represent one of the most important conceptual
+348   parts from the MTP concept. The state-based behavior behind the procedural abstraction with
+349   the possibility to define multiple procedures as different variants of process functions,
+350   parameterization and reporting capabilities completes the Service concept.
+
+351   To implement cross-PEA control loops or interlocking logic in the POL, the concept, interfaces,
+352   and model elements for process value interconnections are specified within this part, too. This
+353   release of the MTP specification foresees the interconnection of process values from different
+354   PEAs within the POL.
+
+355   With the introduction of Automation Services, the use of Service interaction mechanisms and
+356   status information of Services requires human readable multi-language-based texts which shall
+357   be shown within the POL visualization. Specification part 4 introduces the models to be used
+358   for those Service-specific text definitions based on the general text definitions introduced in the
+359   specification part on hand.
+
+360   8.4   MTP Specification – Part 5: Runtime and Communication
+
+361   Over the last years a lot of different communication technologies came up and provide benefits
+362   in different scenarios and situations. To be future-proof the MTP concept in general foresees a
+363   technology-agnostic description format for the communication aspect.
+
+364   To be usable within the MTP concept, each communication technology needs a technology-
+365   specific specification to define which capabilities provided in the MTP concept in general are
+366   mappable to the specific technology. Otherwise, workarounds or unusable features are a
+367   consequence.
+
+368   Part 5 provides some fundamental specification parts as well as a list of topics which have to
+369   be specified dependent on each used technology in their technology-specific specification.
+
+370   8.5   MTP Specification – Part 5.1: Runtime and Communication – Open Platform
+371         Communications – Unified Architecture
+
+372   The standard Open Platform Communications – Unified Architecture (OPC UA) provides wide
+373   communication capabilities based on an object-oriented address model accessible in a client-
+374   server architecture pattern.
+
+375   This part of the specification defines the minimum conformance units of the OPC UA
+376   specification which shall be available to be used within the MTP concept. The different
+377   communication features foreseen in the MTP concept are mapped to OPC UA mechanisms and
+378   some standardized address model constructs are introduced.
+
+379   Additional to the basic communication mappings, an improved provisioning workflow next to the
+380   standard workflow is described following the possibilities of OPC UA.
+
+381   Which parts of the OPC UA specification are used within the MTP concept and how they are
+382   used, is described in MTP Specification Part 5.1.
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                       Page 22 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models             Version d0.9
+
+383   8.6   MTP Specification – Part 6: Alarms and Events
+
+384   The operator must be notified of any disruption to normal operation. To provide such feature in
+385   a vendor-neutral way, many requirements and technology-dependent capabilities have to be
+386   taken into account.
+
+387   To be able to provide a first usable concept for an event and alarm mechanism in a vendor
+388   neutral way, MTP Specification Part 6 specifies a base profile using bit-triggered POL-centric
+389   event and alarm mechanism and an extended profile for PEA-managed alarms defined by
+390   dedicated DataAssemblies. Both are described within the MTP. This allows to import all relevant
+391   events and alarms of a PEA into the POL alarm management functionality.
+392
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                   Page 23 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+
+393   9     Principles and Conventions for the Module Type Package Modelling
+
+394   9.1     Principles and Conventions for AutomationML Definitions
+
+395   9.1.1     Using of Attributes fields Value and DefaultValue
+
+396   If an attribute has a value, the field value shall be used by default. If there are any exceptions
+397   from this general statement and the general AML definition, it is mentioned explicitly within the
+398   specification.
+
+399   In general, the field DefaultValue may be used. Mandatory use of the field DefaultValue is
+400   mentioned explicitly as well.
+
+401   9.1.2     Mandatory use of Object ID of all AutomationML Objects
+
+402   The AutomationML Property ID of all InstanceHierarchies, InternalElements, and
+403   ExternalInterfaces shall be set to a unique GUID-formatted value (RFC 4122). Other
+404   AutomationML objects may set the ID Property. If other Aspects require an ID reference to
+405   AutomationML objects which do not specify a mandatory ID, this will be stated in the according
+406   document.
+
+407   9.2     Principle Model Architecture and Package Format
+
+408   The MTP uses an open architecture using AutomationML 2.10 (Automation Markup Language,
+409   see IEC 62714) with the underlying file format CAEX 3.0 (Computer Aided Engineering
+410   Exchange).
+
+411   Each MTP is packed following the Open Packaging Conventions as described in Section 14.
+
+412   The manifest of an MTP is an AutomationML file containing at least three InstanceHierarchy
+413   (IH), namely ModuleTypePackage, DataAssemblies, and ServerAssemblies. Further parts of
+414   the specifications may define further aspects that are referenced from the MTP manifest.
+415   Thereby, each aspect shall be represented by a separate IH in the manifest. Existing aspects
+416   are not affected by this, so that aspects can be gradually included in the MTP in the context of
+417   further parts of the MTP Specification.
+
+418   9.3     Aspect-oriented Model Extensions and their Model Definitions
+
+419   The corresponding versions of the individual aspects defined in the MTP Specifications,
+420   according to which the contents of the MTP are structured, shall be specified in the MTP file.
+421   The versioning shall be done according to the definitions in Section 10.
+
+422   For each aspect in the MTP, a corresponding SystemUnitClassLibrary (SUCL) is created, which
+423   contains the classes necessary for modelling the aspect.
+
+424   If ExternalInterfaces (EI) are required, then an additional InterfaceClassLibrary (ICL) will be
+425   defined for the respective aspect.
+
+426   If optional description components are required, these will be modelled in the form of
+427   RoleClasses (RCs), thus a RoleClassLibrary (RCL) is created, if required. It must thereby be
+428   explicitly defined whether the RCs are to be defined as SupportedRoleClasses (SRC) or
+429   RoleRequirements (RR).
+
+430   If AttributeTypes (AT) are required, an AttributeTypeLibrary (ATL) will additionally be developed
+431   for the respective aspect.
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                      Page 24 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models          Version d0.9
+
+432   A new aspect class derived from the SUC MTPSet (Section 11.7.4) is required for each aspect
+433   mapped in the MTP, which is defined in the SUCL representing the aspect.
+434
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 25 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                               Version d0.9
+
+435   9.4      Basic Conventions for Model Definitions
+
+436   Model definitions represent descriptive AutomationML entities which extends the MTP with
+437   semantical content. Within this section the different table templates for model definitions of type
+438   SystemUnitClass (SUC), AttributeType (AT), RoleClass (RC) and Interface Class (IC) are
+439   defined.
+
+440   9.4.1       Object Oriented Modelling
+
+441   The modelling of the definitions is based on object-oriented principles. Each model definition
+442   shall have no more than one parent definition, adhering to “single inheritance”. In addition to
+443   inheriting properties and attributes, model definitions shall also inherit RoleClasses and
+444   instance constraints.
+
+445   9.4.2       List of general fields used in the Model Definitions
+
+446   Table 1 describes base fields used within the different model definition templates introduced in
+447   the next sections of this chapter. Template specific fields are introduced in the template specific
+448   sections.
+
+449                   Table 1 – List of common fields within model definition templates
+
+       Table Fields                     Descriptions
+       Name                             name of the model definition
+       Type                             type of the model definition
+       Modifier                         modifier of the model definition, enumerated value [ ‘ ‘, ‘sealed’, ‘abstract’]
+                                        (abstract: no instance of this class shall be created directly, only instances of
+                                        derivations are possible; sealed: this class shall not be derived)
+       Description                      description of the model definition
+       AutomationML Path                hierarchy path of the model definition within the AutomationML structure
+       AutomationML BaseRef             base reference path of the parent model definition
+       Version                          profile version reference where this definition is related to
+       AutomationML Properties          list of AutomationML properties of the model definition
+                                        (properties are the fields of the AutomationML object header)
+              Name                      name of the used field of the AutomationML object header
+              Data Type                 data type of the used field
+              Description               description of the meaning of the used field
+       AutomationML Attributes          list of AutomationML attributes of the model definition
+              Name                      name of the attribute
+              Type                      type of the attribute
+              Description               description of the attribute
+              AttributeType Reference   Reference to the AttributeType of the attribute
+
+450
+451
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                     Page 26 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                                 Version d0.9
+
+452   9.4.3      Conventions for System Unit Classes
+
+453   In Table 2 the base template for model definitions of the SUC type is described and in Table 3
+454   model specific fields are named and described.
+
+455                         Table 2 – Template for System Unit Class Definitions
+
+                                        Module Type Package - Model Definition
+      Name
+      Type                       SystemUnitClass (SUC)
+      Modifier
+      Description
+      AutomationML Path
+      AutomationML BaseRef
+      RoleClasses
+      Version
+      AutomationML Properties
+      Name                       Type                   Description
+
+
+      AutomationML Attributes
+      Name                       Type                   Description                          AttributeType Reference
+
+
+      Comment
+
+
+                                   AutomationML Object - Instance Constraints
+      Allowed Parents
+      Allowed Children
+
+456
+
+
+457                       Table 3 – Description of the columns used to define SUCs
+
+       Table Fields                     Descriptions
+       RoleClasses                      list of all used RCs with its implementation marker as RR or SRC
+       Allowed Parents                  constraints concerning to which elements this definition is allowed to be
+                                        added as child in the instance model, e.g. a list of types
+       Allowed Children                 constraints concerning which elements are allowed to be added to this
+                                        definition as children in the instance model, e.g. a list of types and their
+                                        cardinalities
+
+458
+459
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                     Page 27 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                                Version d0.9
+
+460   9.4.4      Conventions for Interface Classes
+
+461   In Table 4 the base template for model definitions of the IC type is described and in Table 5
+462   model specific fields are named and described.
+
+463                          Table 4 – Template for Interface Class Definitions
+
+                                       Module Type Package - Model Definition
+      Name
+      Type                      Interface Class (IC)
+      Modifier
+      Description
+      AutomationML Path
+      AutomationML BaseRef
+      Version
+      AutomationML Properties
+      Name                      Type                   Description
+
+
+      AutomationML Attributes
+      Name                      Type                   Description                          AttributeType Reference
+
+
+      Comment
+
+
+                                   AutomationML Object - Instance Constraints
+      Allowed Parents
+      Allowed Children
+
+464
+
+
+465                       Table 5 – Description of the columns used to define ICs
+
+       Table Fields                    Descriptions
+       Allowed Parents                 constraints concerning to which elements this definition is allowed to be
+                                       added as child in the instance model, e.g. a list of types
+       Allowed Children                constraints concerning which elements are allowed to be added to this
+                                       definition as children in the instance model, e.g. a list of types and their
+                                       cardinalities
+
+466
+467
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                    Page 28 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                            Version d0.9
+
+468   9.4.5      Conventions for Role Classes
+
+469   In Table 6 the base template for model definitions of the RC type is described and in Table 7
+470   model specific fields are named and described.
+
+471                          Table 6 – Template for Role Class Definitions
+
+                                       Module Type Package - Model Definition
+      Name
+      Type                      RoleClass (RC)
+      Modifier
+      Description
+      AutomationML Path
+      AutomationML BaseRef
+      Version
+      AutomationML Properties
+      Name                      Type                  Description
+
+
+      AutomationML Attributes
+      Name                      Type                  Description                         AttributeType Reference
+
+
+      Comment
+
+
+                                  AutomationML Object - Instance Constraints
+      Allowed Annotations
+
+472
+
+
+473                     Table 7 – Description of the columns used to define RCs
+
+       Table Fields                    Descriptions
+       Allowed Annotations             list of types where this Role Class is allowed to be added as indicated as
+                                       SRC or RR
+
+474
+475
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                 Page 29 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                     Version d0.9
+
+476   9.4.6      Conventions for Attribute Types
+
+477   In Table 8 the base template for model definitions of the AT type is described and in Table 9
+478   model specific fields are named and described.
+
+479                         Table 8 – Template for Attribute Type Definitions
+
+                                       Module Type Package - Model Definition
+      Name
+      Type                      AttributeType (AT)
+      Modifier
+      Description
+      AutomationML Path
+      AutomationML BaseRef
+      DataType
+      Version
+      AutomationML Attributes
+      Name                      Type                  Description                    AttributeType Reference
+
+
+      Comment
+
+
+480
+
+
+481                     Table 9 – Description of the columns used to define ATs
+
+       Table Fields                    Descriptions
+       DataType                        base data type of the defined AttributeType
+482
+483
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                           Page 30 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                                Version d0.9
+
+484   9.5      Basic Conventions for Library Definitions
+
+485   9.5.1      List of general fields used in the Library Definitions
+
+486   Table 10 describes base fields used within the different library definition templates introduced
+487   in the next sections of this chapter. There are no further template specific fields necessary.
+
+488                  Table 10 – List of common fields within library definition templates
+
+       Table Fields                     Descriptions
+       Name                             name of the library definition
+       Type                             type of the library definition
+       Description                      description of the library definition
+       Version                          version identifier to which profile this definition is related
+       AutomationML Properties          list of properties of an AutomationML object which are used and described by
+                                        their name, data type and description
+                                        (properties are the fields of the AutomationML object header)
+              Name                      name of the used field of the AutomationML object header
+              Type                      data type of the used field
+              Description               description of the meaning of the used field
+
+489
+
+
+490   9.5.2      Conventions for System Unit Class Library
+
+491   The basic structure of a System Unit Class Library definition table is shown in Table 11. The
+492   fields of the template are explained in Table 10.
+
+493                     Table 11 – Template for System Unit Class Library Definitions
+
+                                     Module Type Package - Library Definition
+      Name
+      Type                       SystemUnitClassLibrary (SUCL)
+      Description
+      Version
+      AutomationML Properties
+      Name                       Type                    Description
+
+
+      Comment
+
+494
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                       Page 31 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                 Version d0.9
+
+495   9.5.3     Conventions for Interface Class Library
+
+496   The basic structure of an Interface Class Library definition table is shown in Table 12. The fields
+497   of the template are explained in Table 10.
+
+498                   Table 12 – Template for Interface Class Library Definitions
+
+                                     Module Type Package - Library Definition
+      Name
+      Type                      InterfaceClassLibrary (ICL)
+      Description
+      Version
+      AutomationML Properties
+      Name                      Type                 Description
+
+
+      Comment
+
+
+499
+
+
+500   9.5.4     Conventions for Role Class Library
+
+501   The basic structure of a Role Class Library definition table is shown in Table 13. The fields of
+502   the template are explained in Table 10.
+
+503                      Table 13 – Template for Role Class Library Definitions
+
+                                     Module Type Package - Library Definition
+      Name
+      Type                      RoleClassLibrary (RCL)
+      Description
+      Version
+      AutomationML Properties
+      Name                      Type                 Description
+
+
+      Comment
+
+
+504
+505
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                       Page 32 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+506   9.5.5     Conventions for Attribute Type Library
+
+507   The basic structure of an Attribute Type Library definition table is shown in Table 14. The fields
+508   of the template are explained in Table 10.
+
+509                    Table 14 – Template for Attribute Type Library Definitions
+
+                                    Module Type Package - Library Definition
+      Name
+      Type                      AttributeTypeLibrary (ATL)
+      Description
+      Version
+      AutomationML Properties
+      Name                      Type                Description
+
+
+      Comment
+
+510
+511
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                      Page 33 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                               Version d0.9
+
+512   9.6      Basic Conventions for Instance Hierarchy Definitions
+
+513   The basic structure of an Instance Hierarchy definition table is shown in Table 15. The fields of
+514   the template are explained in Table 16.
+
+515                         Table 15 – Template for Instance Hierarchy Definitions
+
+                                        Module Type Package - Model Definition
+      Name
+      Type                       InstanceHierarchy (IH)
+      Description
+      Version
+      AutomationML Properties
+      Name                       Type                   Description
+      ID                         xs:string              Identifier of the Instance Hierarchy
+      Name                       xs:string              Name of the Instance Hierarchy
+      Comment
+
+
+                                          AutomationML Object - Constraints
+      Allowed Children
+
+516
+
+
+517                  Table 16 – List of common fields within model definition templates
+
+       Table Fields                     Descriptions
+       Name                             name of the Instance Hierarchy
+       Type                             “Instance Hierarchy (IH)” (constant)
+       Description                      description of the Instance Hierarchy
+       Version                          version identifier to which profile this hierarchy is related
+       AutomationML Properties          list of properties of an AutomationML object which are used and described by
+                                        their name, data type and description
+                                        (properties are the fields of the AutomationML object header)
+              Name                      name of the used field of the AutomationML object header
+              Type                      data type of the used field
+              Description               description of the meaning of the used field
+       Allowed Children                 list of types and their cardinality which are allowed to be added to this model
+                                        definition in the instance model
+
+518
+
+
+519
+520
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                      Page 34 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models              Version d0.9
+
+
+521   10 MTP Versioning
+
+522   This section specifies the versioning of and within the MTP concept.
+523   The concept foresees…
+524           … a versioning of the specification documents,
+525           … a versioning of the definitions within the specification and
+526           … a versioning of and within the package and the corresponding PEA system.
+527   Within Section 10.1 the versioning of the specification documents is defined. Within
+528   Section 10.2 a basic versioning scheme is described, which shall be applied for all content
+529   related versioning information. Section 10.3 introduces the concept of aspects and profiles for
+530   versioning the specified content of the MTP concept. In Section 10.4 the representation of the
+531   versioning is specified. Further information regarding versioning is given within the aspect-
+532   specific sections.
+533   10.1    Versioning of the Specification Documents
+
+534   This standard consists of several parts, which focus on different topics necessary for the
+535   integration of PEA into the POL. To maintain the consistency within the overall standard, the
+536   publication of the documents follows a release cycle concept.
+
+537   For internal references, the individual documents shall be identified by the title and the year
+538   (YYYY) of publication (e.g., "ModuleTypePackage Part <Number>: <Title>, <Year>” or “MTP
+539   Part <Number>:<Year>” for short). If it is the same released document date, the year suffix may
+540   be removed – “MTP Part <Number>”.
+
+541   For external references, the individual documents shall be identified by title, the year of
+542   publication and the document identifier from PI (e.g. “MTP Specification Part <number>, <Title>;
+543   <Year> PI Specification no. 30.<document identifier>”). If the entire specification shall be
+544   referenced, the title, the year of publication and the generic document identifier is used (e.g.
+545   “MTP Specification; <Year>; PI Specification no. 30.X”).
+
+546   10.2    Versioning Scheme
+
+547   For the content-related version information, a common scheme is used. The versioning shall
+548   be notated in the Major-Minor-Patch Notation, specified in [1], which is formatted as follows:
+
+549   Major-Minor-Patch Notation
+550   Notation scheme: {Major}.{Minor}.{Patch}
+
+551   The major version is identified by the main version number. A new major version indicates
+552   significant and breaking changes to the aspect under consideration. Backwards compatibility to
+553   older major versions is rarely given.
+
+554   The minor version is identified by the minor version number. A new minor version indicates an
+555   extension of the aspect under consideration. Backwards compatibility to older minor versions
+556   is given under certain conditions.
+
+557   The patch version is identified by the patch version number. A new patch version indicates
+558   minor bug fixes of the aspect under consideration. Backwards compatibility to older patch
+559   versions is given to unlimited extent.
+
+560   To model this version information, the abstract AT SemanticVersionAttributeType is introduced
+561   in Section 11.7.15.
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                    Page 35 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+562   10.3     Concept of Aspects and Profiles
+
+563   The concept of aspects and profiles introduces the versioning mechanisms of the specification
+564   content. In general, an aspect focuses on a defined functional part or subsystem of the POL.
+565   Within such an aspect, related definitions for DataAssemblies, models, workflows, and
+566   constraints are grouped to so-called profiles. Each aspect shall have a base profile to ensure
+567   the interoperability on a minimum level of standard functionality. Further profiles may be used
+568   to extend different aspects use case- or industry-specifically and to provide an easy way to
+569   introduce new conceptual topics. Extension profiles are complementary and shall not replace,
+570   change or invalidate the base profile. The relations between the package, aspects, profiles, and
+571   definitions are shown in Figure 4.
+
+
+
+
+572
+
+
+573       Figure 4 – Conceptional relations between the Package, its Aspects, profiles and
+574                       individual definitions in the MTP Specification
+
+575   10.3.1     Aspect Models
+
+576   Different aspect models are specified throughout the different parts of this standard. An aspect
+577   model groups all DataAssembly definitions, model elements, and constraints to describe all
+578   relevant content to integrate the PEA into one functional subsystem of the POL.
+
+579   10.3.2     Profiles
+
+580   A profile is a collection of related definitions for DataAssemblies, model elements and
+581   constraints of one aspect. The scope of a profile shall be limited to one aspect. Profiles shall
+582   not overlap, i.e., each definition for DataAssemblies, model elements, or constraints specified
+583   in this standard belongs to exactly one single profile.
+
+584   To be compliant to a profile, all relevant DataAssemblies, model elements and constraints shall
+585   be supported. Every aspect shall feature at least one profile, which is the “Base”-profile. An
+586   aspect may include multiple extension profiles. To ensure interoperability, profiles shall be
+587   versioned as described in Section 10.2. The unique identification of a profile consists of the
+588   aspect title, profile title and the version. The profile designation shall follow the shown scheme:
+
+589   ModuleTypePackage:{AspectTitle}.{ProfileTitle}:{Version}
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                       Page 36 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models              Version d0.9
+
+590   The AspectTitle and the ProfileTitle shall be alphabetic strings ([A-Za-z]) of arbitrary length,
+591   consisting of at least one character.
+
+592   All MTP profiles shall be versioned following this definition.
+
+593   10.4   Representation of Versioning Information in AutomationML
+
+594   All MTP specification profiles used within the MTP file shall be listed within the MTP Manifest.
+595   To add the profile identification, the notation following the AutomationML Best Practice
+596   Recommendation “Naming of related Documents and their Versions” [2] shall be used.
+
+597   The DocumentIdentifier within the Document tag of the AutomationML File shall be set to the
+598   ProfileID of the respective MTP aspect (Table 17).
+
+599   The Version within the Document tag of the AutomationML File shall be set to the Version of
+600   the respective MTP aspect (Table 17).
+601
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                    Page 37 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+
+602   11 MTP Aspect – Manifest
+
+603   11.1   Versioning and Profile Information
+
+604   The Manifest is the core aspect model of the MTP. There is only the Base profile. For the
+605   versioning of the profile Manifest.Base the following version definition is used (Table 17).
+
+606             Table 17 – Profile and version information of the MTP aspect Manifest
+
+                              MTP Profile “Manifest.Base”
+                              Profile ID       ModuleTypePackage:Manifest.Base
+                              Version          2.0.0
+
+607
+
+
+608   11.2   Concept of the Manifest and its Table of Content
+
+609   To have a central entry point into the context of the standardized information models of the
+610   MTP concept the manifest is introduced. The manifest shall be an IH with the name
+611   ModuleTypePackage. Within the manifest, exactly one InternalElement (IE) of the SUC
+612   ModuleTypePackage (Table 20) shall be instantiated, with the name of the PEA type. In
+613   accordance with IEC 62714-1 this name shall not be empty.
+
+614   A PEA shall have a set of standardized information which, in addition to type and instance-
+615   specific information, also enables MTP-PEA verification by means of a type, instance and
+616   version comparison. The workflows are described in Section 11.8. The information available
+617   offline shall be contained as attributes at the IE of SUC ModuleTypePackage (Table 20). The
+618   information available at runtime shall be available in the DataAssembly of SUC
+619   PeaInformationLabel (MTP Part 3).
+620   Furthermore, the possibility of a web visualization is provided. For this purpose, an interface
+621   may be defined using the SUC WebServerUrlInfo (MTP Part 3), from which the web server
+622   address can be retrieved at runtime.
+
+623   A main component of the Manifest is the table of contents for the aspects within the MTP. It
+624   refers to the different aspects so that easy navigation through the MTP is possible. For this
+625   purpose, a SUC MTPSet (Table 21) shall be available, which serves as a parent class, from
+626   which classes can be derived that shall be defined in the respective SUCL of further aspects
+627   of this standard. These derived SUCs in turn shall be instantiated hierarchically under the IE
+628   of SUC ModuleTypePackage by IEs. Each IE whose type is derived from the SUC MTPSet
+629   represents an entry in the manifest's table of contents. This is used to refer to the various
+630   aspects of the MTP. Within the directory entries there shall always be an instance of an IC
+631   AspectSetReference (Table 24) from the ICL MTPICLib, whose attribute AspectRef is to be set
+632   to the value (Value) of the ObjectID of the associated IH within the file of the Manifest. The
+633   attribute AspectRef of the AspectSetReference inherits the meaning of the AT
+634   AspectIDAttributeType from the ATL MTPATLib. The AT AspectIDAttributeType (Table 27)
+635   defines the attribute AspectRef of the data type xs:string, which by definition contains the
+636   ObjectID of an aspect IH. This AT is derived from the generic AT IDReferenceType (Table 26).
+637
+
+
+638   11.3   Concept of ID Links
+
+639   ID links describe a referencing mechanism that references any AutomationML entity via its
+640   ObjectID by means of an attribute value. The value of the attribute contains the ObjectID of the
+641   referenced entity. The ObjectID of an AutomationML entity is of the data type xs:string and is
+642   to be executed as GUID (Globally Unique Identifier). Thus, the referencing attribute of the
+643   AttributeDataType is also to be executed as xs:string. To identify an ID link, the AT shall be set
+644   to IDLinkAttributeType (Table 28) of the ATL MTPATLib (Table 25). This AT is derived from the
+645   generic AT IDReferenceType (Table 26). ID links are used for references with 1:1 or n:1
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                      Page 38 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+646   relations.
+647   The use of the ID link concept is referenced in appropriate sections throughout the remainder
+648   of this and other parts of the standards.
+
+649   11.4   Concept of LinkedObjects
+
+650   The LinkedObject concept shall be used to link related partial descriptions from different aspect
+651   models of the MTP. The core of the concept is the abstract definition of the SUC LinkedObject
+652   (Table 22), as well as the AT RefIDAttributeType (Table 29). This defines how the variable
+653   RefID is to be interpreted in the IE of the SUC LinkedObject.
+654   The SUC LinkedObject (Table 22) is located in the SUCL MTPSUCLib (Table 19). The SUC has
+655   an attribute RefID of the AT RefIDAttributeType defined in the ATL MTPATLib (Table 25). This
+656   AT is derived from the generic AT IDReferenceType (Table 26) and defines that the attribute
+657   contains a GUID which is used to describe the affiliation of an object to an object of another
+658   aspect. For this purpose, the RefIDs of different SUCs inherited from the SUC LinkedObject
+659   shall be set to the identical GUID.
+660   The class for describing the data objects – SUC DataAssembly – is derived from the SUC
+661   LinkedObject, which means that each data object already has the AutomationML attribute RefID
+662   and can be referenced to it. If the data objects are referenced from any other MTP aspect, the
+663   referencing class shall therefore also be derived from the SUC LinkedObject. This also gives
+664   this SUC a RefID and the ability to refer to another LinkedObject by a 1:n relationship.
+665   RefIDs of DataAssemblies shall be unique within the MTP, meaning two DataAssemblies shall
+666   not share the same value for their RefIDs. In general, a RefID shall not be empty, unless stated
+667   otherwise. If RefID is left empty, this indicates that the object is assigned directly to the PEA.
+
+668   11.5   Multilingual Texts
+
+669   Multilingual modelling follows the Best Practice Recommendation [3] for modelling multiple
+670   languages within an AutomationML file. The AT MultiLanguageTextAttribute (Table 31) defines
+671   the entry point of a multilingual modelling of a text element of the SUC Text. All string variables
+672   may be implemented in the form of multi-language modelling if static modelling is used.
+
+673   For each language-specific text, a child attribute shall be added with the corresponding
+674   language code according to RFC5646 (e.g. „aml-lang=de-DE“) as name and the language-
+675   specific text as Value [3].
+
+676   11.6   Overview of Aspect Definitions
+
+677   Corresponding to the MTP Aspect Manifest all used definitions are defined in their
+678   AutomationML libraries.
+
+679   SUCL MTPSUCLib for SystemUnitClasses
+
+680   ATL MTPATLib for AttributeTypes
+
+681   ICL MTPICLib for InterfaceClasses
+
+682   A RCL isn’t needed because no RCs are defined so far.
+
+683   All definitions that shall be used to model the MTP Aspect Manifest are defined in the following
+684   sub sections and are shown as overview in Figure 5.
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                       Page 39 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models         Version d0.9
+
+
+
+
+685
+
+
+686       Figure 5 – Overview of the model and DataAssembly definitions of the Manifest
+687
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 40 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                     Version d0.9
+
+688   11.7     Aspect-related Model Definitions
+
+689   11.7.1     InstanceHierarchy ModuleTypePackage
+
+690   The IH ModuleTypePackage, specified in Table 18, represents the entry point of the whole MTP
+691   information model.
+
+692              Table 18 – Instance Hierarchy Definition of the IH ModuleTypePackage
+
+                                       Module Type Package - Model Definition
+      Name                      ModuleTypePackage
+      Type                      InstanceHierarchy (IH)
+      Description               Root element under which all model aspects are subordinated
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                Description
+      ID                        xs:string           ID of the Instance Hierarchy
+      Comment
+      –
+                                         AutomationML Object - Constraints
+      Allowed Children          [1] IE of SUC ModuleTypePackage
+693
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                            Page 41 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                        Version d0.9
+
+694   11.7.2    SystemUnitClassLibrary MTPSUCLib
+
+695   The SUCL MTPSUCLib, specified in Table 19, defines the base definitions for the Manifest of
+696   a Module Type Package.
+
+697                     Table 19 – Library Definition of the SUCL MTPSUCLib
+
+                                    Module Type Package - Library Definition
+      Name                      MTPSUCLib
+      Type                      SystemUnitClassLibrary (SUCL)
+      Description               Library containing the manifest SUC model definitions of an MTP
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                Description
+      –                         –                   –
+      Comment
+       –
+698
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                             Page 42 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+699   11.7.3     SystemUnitClass ModuleTypePackage
+
+700   The SUC ModuleTypePackage, specified in Table 20, represents the entry point of the whole
+701   MTP information model within the Manifest file and contains the table of content and the
+702   mandatory DataAssemblySet (MTP Part 3) and ServerAssemblySet (MTP Part 5). It contains
+703   several attributes which are used among others in specified verification workflows.
+
+704                      Table 20 – Model definition of the SUC ModuleTypePackage
+
+                                       Module Type Package - Model Definition
+      Name                      ModuleTypePackage
+      Type                      SystemUnitClass (SUC)
+      Modifier                  sealed
+      Description               Model Definition for the Entry Point of the Module Type Package
+      AutomationML Path         MTPSUCLib/ModuleTypePackage
+      AutomationML
+                                –
+      BaseRef
+      RoleClasses               [1] AutomationMLBaseRoleClassLib/AutomationMLBaseRole (SRC)
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type               Description
+      ID                        xs:string          GUID-formatted ID of the Object
+      Name                      xs:string          Name of the PEA Type
+      AutomationML Attributes
+      Name                      Type               Description                       AttributeType Reference
+                                                                                     ModuleTypePackageRevision-
+       Version                  xs:string          Module Type Package Version
+                                                                                     Type
+                                                   Module Type Package Device
+      DeviceRevision            xs:string                                            DeviceRevisionType
+                                                   Revision
+      ManufacturerUri           xs:string          ManufacturerUri
+      ProductCode               xs:string          ProductCode
+      PeaInformation            xs:string          PeaInformationLabel ID Link       IDLinkAttributeType
+      WebServerUrl              xs:string          Web Server Url Info ID Link       IDLinkAttributeType a)
+      Comment
+      a) Optional. If set, the WebServerUrl is modeled as DataAssembly of Type "WebServerUrlInfo (MTP Part 3). If
+
+      no web visualization information is available, the value of the property shall empty.
+
+                                    AutomationML Object - Instance Constraints
+      Allowed Parents           IH ModuleTypePackage
+
+      Allowed Children          [0..1] IE of each derivation of SUC MTPSet
+705
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                Page 43 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                      Version d0.9
+
+706   11.7.4     SystemUnitClass MTPSet
+
+707   The SUC MTPSet, specified in Table 21, defines the abstract definition of a table of content
+708   entry of the MTP model.
+
+709                          Table 21 – Model definition of the SUC MTPSet
+
+                                       Module Type Package - Model Definition
+      Name                      MTPSet
+      Type                      SystemUnitClass (SUC)
+      Modifier                  abstract
+      Description               Abstract Element for an MTP Aspect Set
+      AutomationML Path         MTPSUCLib/MTPSet
+      AutomationML BaseRef      –
+      RoleClasses               [1] AutomationMLBaseRoleClassLib/AutomationMLBaseRole (SRC)
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                Description
+      ID                        xs:string           GUID-formatted ID of the Object
+      AutomationML Attributes
+      Name                      Type                Description                       AttributeType Reference
+      –                         –                   –                                 –
+      Comment
+      –
+                                    AutomationML Object - Instance Constraints
+      Allowed Parents           IE of SUC ModuleTypePackage
+      Allowed Children          [0..1] EI of IC AspectSetReference
+710
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                             Page 44 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                        Version d0.9
+
+711   11.7.5     SystemUnitClass LinkedObject
+
+712   The SUC LinkedObject, specified in Table 22, defines the abstract referencing object which is
+713   used in the concept of LinkedObjects.
+
+714                       Table 22 – Model definition of the SUC LinkedObject
+
+                                       Module Type Package - Model Definition
+      Name                      LinkedObject
+      Type                      SystemUnitClass (SUC)
+      Modifier                  abstract
+      Description               Abstract cross-referencing object
+      AutomationML Path         MTPSUCLib/LinkedObject
+      AutomationML BaseRef      –
+      RoleClasses               [1] AutomationMLBaseRoleClassLib/AutomationMLBaseRole (SRC)
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                 Description
+      ID                        xs:string            GUID-formatted ID of the Object
+      AutomationML Attributes
+      Name                      Type                 Description                       AttributeType Reference
+      RefID                     xs:string            RefID Reference Value             RefIDAttributeType
+      Comment
+       –
+                                    AutomationML Object - Instance Constraints
+      Allowed Parents           (no general constraints given)
+      Allowed Children          (no general constraints given)
+715
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                              Page 45 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                        Version d0.9
+
+716   11.7.6    InterfaceClassLibrary MTPICLib
+
+717   The ICL MTPICLib, specified in Table 23, defines the base interface classes for the Manifest of
+718   a Module Type Package.
+
+719                        Table 23 – Library Definition of the ICL MTPICLib
+
+                                     Module Type Package - Library Definition
+      Name                      MTPICLib
+      Type                      InterfaceClassLibrary (ICL)
+      Description               Library containing the manifest IC model definitions of an MTP
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                 Description
+      –                         –                    –
+      Comment
+       –
+720
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 46 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+721   11.7.7     InterfaceClass AspectSetReference
+
+722   The IC AspectSetReference, specified in Table 24, defines the referencing interface class which
+723   contains the aspect reference following the semantics of the AT AspectIDAttributeType to
+724   reference from the table of content entry to the corresponding IH.
+
+725                      Table 24 – Model definition of the IC AspectSetReference
+
+                                       Module Type Package - Model Definition
+      Name                      AspectSetReference
+      Type                      InterfaceClass (IC)
+      Modifier                  sealed
+      Description               InterfaceClass for the Reference of the AspectSet Instance Hierarchy
+      AutomationML Path         MTPICLib/AspectSetReference
+      AutomationML BaseRef      –
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                    Description
+      ID                        xs:string               GUID-formatted ID of the Object
+      AutomationML Attributes
+      Name                      Type                    Description                       AttributeType Reference
+      AspectRef                 xs:string               Aspect Instance Hierarchy ID      AspectIDAttributeType
+      Comment
+       –
+                                    AutomationML Object - Instance Constraints
+      Allowed Parents           IE of SUC MTPSet
+      Allowed Children          (no children allowed)
+726
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                Page 47 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                       Version d0.9
+
+727   11.7.8    AttributeTypeLibrary MTPATLib
+
+728   The ATL MTPATLib, specified in Table 25, defines the base attribute types for the manifest of
+729   a Module Type Package.
+
+730                       Table 25 – Library Definition of the ATL MTPATLib
+
+                                     Module Type Package - Library Definition
+      Name                      MTPATLib
+      Type                      AttributeTypeLibrary (ATL)
+      Description               Library containing the manifest AT model definitions of an MTP
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                Description
+      –                         –                   –
+      Comment
+       –
+731
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                              Page 48 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                 Version d0.9
+
+732   11.7.9     AttributeType IDReferenceType
+
+733   The AT IDReferenceType, specified in Table 26, defines an abstract referencing type which
+734   uses GUID-formatted Identifiers of model and DataAssembly definitions.
+
+735                      Table 26 – Model definition of the AT IDReferenceType
+
+                                       Module Type Package - Model Definition
+      Name                      IDReferenceType
+      Type                      AttributeType (AT)
+      Modifier                  abstract
+      Description               Abstract Attribute Type of ID-based References
+      AutomationML Path         MTPATLib/IDReferenceType
+      AutomationML BaseRef      –
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                 AttributeType Reference
+      –                         –                    –                           –
+      Comment
+       –
+736
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                        Page 49 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                    Version d0.9
+
+737   11.7.10 AttributeType AspectIDAttributeType
+
+738   The AT AspectIDAttributeType, specified in Table 27, defines a concrete identifier-based
+739   reference type which is used to reference from an AutomationML attribute of an AutomationML
+740   object to the aspect-related IH of the Manifest file. It contains the ObjectID of the IH in its Value
+741   field.
+
+742                   Table 27 – Model definition of the AT AspectIDAttributeType
+
+                                       Module Type Package - Model Definition
+      Name                      AspectIDAttributeType
+      Type                      AttributeType (AT)
+      Modifier                  sealed
+      Description               Attribute Type to indicate an Aspect ID Reference
+      AutomationML Path         MTPATLib/IDReferenceType/AspectIDAttributeType
+      AutomationML BaseRef      MTPATLib/IDReferenceType
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                    AttributeType Reference
+      –                         –                    –                              –
+      Comment
+       –
+743
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                           Page 50 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                  Version d0.9
+
+744   11.7.11 AttributeType IDLinkAttributeType
+
+745   The AT IDLinkAttributeType, specified in Table 28, defines a concrete identifier-based
+746   reference type which is used to reference in general from an AutomationML attribute to the
+747   ObjectID of any AutomationML object existing within the whole Manifest file. It follows the
+748   definition of the concept of ID Links.
+
+749                   Table 28 – Model definition of the AT IDLinkAttributeType
+
+                                       Module Type Package - Model Definition
+      Name                      IDLinkAttributeType
+      Type                      AttributeType (AT)
+      Modifier                  sealed
+      Description               Attribute Type to indicate an ID Link Reference
+      AutomationML Path         MTPATLib/IDReferenceType/IDLinkAttributeType
+      AutomationML BaseRef      MTPATLib/IDReferenceType
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                  AttributeType Reference
+      –                         –                    –                            –
+      Comment
+       –
+750
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                         Page 51 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                Version d0.9
+
+751   11.7.12 AttributeType RefIDAttributeType
+
+752   The AT RefIDAttributeType, specified in Table 29, defines a concrete identifier-based reference
+753   type which is used within the concept of LinkedObjects.
+
+754                    Table 29 – Model definition of the AT RefIDAttributeType
+
+                                       Module Type Package - Model Definition
+      Name                      RefIDAttributeType
+      Type                      AttributeType (AT)
+      Modifier                  sealed
+      Description               Attribute Type to indicate an RefID Reference
+      AutomationML Path         MTPATLib/IDReferenceType/RefIDAttributeType
+      AutomationML BaseRef      MTPATLib/IDReferenceType
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                AttributeType Reference
+      –                         –                    –                          –
+      Comment
+       –
+755
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                       Page 52 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                             Version d0.9
+
+756   11.7.13 AttributeType StaticValueAttributeType
+
+757   The AT StaticValueAttributeType, specified in Table 30, defines the indication if a variable-
+758   describing attribute of a DataAssembly is explicitly static. In that case the convention of static
+759   values shall be applied.
+
+760                 Table 30 – Model definition of the AT StaticValueAttributeType
+
+                                       Module Type Package - Model Definition
+      Name                      StaticValueAttributeType
+      Type                      AttributeType (AT)
+      Modifier                  –
+      Description               AttributeType to indicate a static value for data assembly variables
+      AutomationML Path         MTPATLib/StaticValueAttributeType
+      AutomationML BaseRef      –
+      DataType                  –
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                         AttributeType Reference
+      –                         –                    –                                   –
+      Comment
+       –
+761
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                 Page 53 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                     Version d0.9
+
+762   11.7.14 AttributeType MultiLanguageTextAttribute
+
+763   The AT MultiLanguageTextAttribute, specified in Table 31, defines a special type of the
+764   AT StaticValueAttributeType. A string variable may be modelled with multiple languages by
+765   applying this attribute type and describing the language-specific texts as defined in
+766   Section 11.5.
+
+767                 Table 31 – Model definition of the AT MultiLanguageTextAttribute
+
+                                       Module Type Package - Model Definition
+      Name                      MultiLanguageTextAttribute
+      Type                      AttributeType (AT)
+      Modifier                  sealed
+      Description               Model Definition of a Multi-Language Attribute
+      AutomationML Path         MTPATLib/StaticValueAttributeType/MultiLanguageTextAttribute
+      AutomationML BaseRef      MTPATLib/StaticValueAttributeType
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                    AttributeType Reference
+      –                         –                    –                              –
+      Comment
+       –
+768
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                           Page 54 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                    Version d0.9
+
+769   11.7.15 AttributeType SemanticVersionAttributeType
+
+770   The AT SemanticVersionAttributeType, specified in Table 32, is the general attribute type which
+771   indicates a string information which is formatted as defined in the semantic versioning [1].
+
+772                 Table 32 – Model definition of the AT SemanticVersionAttributeType
+
+                                           Module Type Package - Model Definition
+      Name                          SemanticVersionAttributeType
+      Type                          AttributeType (AT)
+      Modifier                      –                                                                         Kommentiert [DH1]: Should be abstract according to
+      Description                   Semantic Versioning Information a)                                        text
+      AutomationML Path             MTPATLib/SemanticVersionAttributeType
+      AutomationML BaseRef          –
+      DataType                      xs:string
+      Version                       ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                          Type                 Description                AttributeType Reference
+      –                             –                    –                          –
+      Comment
+      a)
+           Semantic Versioning according to Semantic Versioning (V 2.0.0)
+773
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                           Page 55 of 86 Pages
+                       Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                  Version d0.9
+
+774   11.7.16 AttributeType ModuleTypePackageRevisionType
+
+775   The AT ModuleTypePackageRevisionType, specified in Table 33, defines the revision
+776   information of the MTP package and bases on the AT SemanticVersionAttributeType.
+
+777              Table 33 – Model definition of the AT ModuleTypePackageRevisionType
+
+                                       Module Type Package - Model Definition
+      Name                      ModuleTypePackageRevisionType
+      Type                      AttributeType (AT)
+      Modifier                  sealed
+      Description               Model Definition of an MTP revision information
+      AutomationML Path         MTPATLib/SemanticVersionAttributeType/ModuleTypePackageRevisionType
+      AutomationML BaseRef      MTPATLib/SemanticVersionAttributeType
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                  AttributeType Reference
+      –                         –                    –                            –
+      Comment
+          –
+778
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                         Page 56 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                    Version d0.9
+
+779   11.7.17 AttributeType DeviceRevisionType
+
+780   The AT DeviceRevisionType, specified in Table 34, defines the revision information of the
+781   communication interface which is implemented in the PEA. The information is based on the
+782   AT SemanticVersionAttributeType.
+
+783                   Table 34 – Model definition of the AT DeviceRevisionType
+
+                                       Module Type Package - Model Definition
+      Name                      DeviceRevisionType
+      Type                      AttributeType (AT)
+      Modifier                  sealed
+      Description               Model Definition of a device revision information
+      AutomationML Path         MTPATLib/SemanticVersionAttributeType/DeviceRevisionType
+      AutomationML BaseRef      MTPATLib/SemanticVersionAttributeType
+      DataType                  xs:string
+      Version                   ModuleTypePackage:Manifest.Base V2.0.0
+      AutomationML Attributes
+      Name                      Type                 Description                    AttributeType Reference
+      –                         –                    –                              –
+      Comment
+          –
+784
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                           Page 57 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                   Version d0.9
+
+787   11.8     Aspect-related Workflow Definitions
+
+788   11.8.1     Overview of the Workflows for Type and Version Verification
+
+789   The workflow specified in this section shall be used to check the affiliation and compatibility of
+790   an MTP to a connected, physical PEA. For this purpose, a type and version verification shall
+791   be carried out. If both verifications are successfully executed, a clear affiliation and compatibility
+792   of an MTP to a PEA can be confirmed. During commissioning of a Modular Plant, the verification
+793   described shall be carried out accordingly.
+
+794   The two verification workflows and the necessary DataAssemblies are specified in detail below.
+
+795   11.8.2     Type Verification Workflow
+
+796   The workflow specified in this section shall be used to check the affiliation between a physical
+797   PEA and the associated MTP on type level. For this check, the two attributes ManufacturerUri
+798   and ProductCode shall be used, which together allow an identification of the PEA type. These
+799   two attributes shall be available both in the runtime interface of a PEA and in the MTP. The
+800   type identification workflow requires that in the MTP the manufacturer and type information are
+801   entered in the attributes ManufacturerUri and ProductCode of the SUC ModuleTypePackage
+802   (Table 20).
+803
+804   The runtime information shall be provided in the attributes ManufacturerUri and ProductCode
+805   of the SUC PeaInformationLabel (MTP Part 3). For verification, the two attributes
+806   ManufacturerUri (runtime and MTP) shall be checked for equality. The same can be done for
+807   the attributes ProductCode. If both comparisons are successful, the MTP describes exactly the
+808   type the PEA is of.
+
+809   However, the version may differ, which will be discussed in the following subsection.
+
+810   11.8.3     Version Verification Workflow
+
+811   To check the compatibility of the version of the MTP against the version of the PEA, the
+812   following four revisions shall be used:
+
+813   ModuleTypePackageRevision
+814   The version information of the entire MTP is part of the SUC ModuleTypePackage, in which the
+815   version information shall be entered in a major-minor-patch notation in the Version attribute.
+816   For this attribute, the AT ModuleTypePackageRevisionType defined in Table 33 shall be used.
+
+817   DeviceRevision
+818   The version of the information technology interface of a PEA is defined as
+819   DeviceRevision and shall be implemented in the major-minor patch notation. The information
+820   technology interface contains the whole set of information that is modelled in the
+821   ServerAssemblySet (MTP Part 5) of the associated MTP. Thus, the DeviceRevision shall cover
+822   the sum of all supported protocols and protocol endpoints described in the MTP.
+
+823   The AT DeviceRevisionType defined in Table 34 shall be used for the attributes containing the
+824   DeviceRevision.
+
+825   SoftwareRevision
+826   The version information of the control software of a PEA is defined as a SoftwareRevision and
+827   shall be implemented in the major-minor-patch Notation.
+
+828   HardwareRevision
+829   The version information on the constructive structure of a PEA is defined as HardwareRevision
+830   and shall be implemented as major-minor-patch notation.
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                   Page 58 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                   Version d0.9
+
+831   Figure 6 shows the different revision information and their relationship starting from PEA-
+832   specific revision information to MTP-specific revision information. Depending on the type of
+833   change, changes at the lower level can lead to changes at all revision levels above.
+834
+835   The compatibility between a version of the MTP and a PEA shall be checked by means of the
+836   DeviceRevision. The version of the runtime interface is in the DeviceRevision attribute defined
+837   in the SUC PeaInformationLabel (MTP Part 3). The information on the MTP side is in the
+838   DeviceRevision attribute of the InternalElement derived from the SUC ModuleTypePackage.
+839
+
+
+840   Initially both DeviceRevisions, i.e., the DeviceRevision in the runtime interface and the
+841   DeviceRevision in the MTP, are set to the same value, e.g., 1.0.0. Changes in the information
+842   technology interface of the PEA affect the DeviceRevision according to the following rules:
+
+843      Adding an element in the information technology interface shall at least lead to a minor increment
+844       of the DeviceRevision.
+845      Changing or removing an element in the information technology interface shall lead to a major
+846       increment of the DeviceRevision.
+847
+
+
+
+
+848
+
+
+849                              Figure 6 – Revision information of a PEA
+
+850   The following rules for verifying version compatibility shall be applied.
+
+851   Major level
+
+852   A different version at major version level between PEA and MTP indicates an incompatibility of
+853   the information technology interface. PEA and MTP are not compatible in this case. If both
+854   version specifications are identical, a minor-level check shall be executed to verify full
+855   compatibility.
+
+856   Minor level
+
+857   In the following, the prefix PEA is used for the version read from the physical PEA. The prefix
+858   MTP stands for the information read from the MTP. At minor level, there are three possible
+859   combinations according to the incrementing rules for the DeviceRevision:
+
+860          Case 1 – PEA.DeviceRevision.Minor is identical to MTP.DeviceRevision.Minor
+861           If both minor versions are identical, PEA and MTP are compatible.
+862
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                         Page 59 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                    Version d0.9
+
+863           Case 2 – PEA.DeviceRevision.Minor is greater than MTP.DeviceRevision.Minor
+864            If the minor version of the PEA is larger, new content was added to the information technology
+865            interface after the MTP was created. No existing content was changed or removed. Thus, the
+866            interface of the PEA contains all the interface elements described in the MTP. The new
+867            information added to the PEA is just not described in the MTP. The use of the MTP for this PEA
+868            implies that new information or functions cannot be used from the POL.
+869
+870           Case 3 – PEA.DeviceRevision.Minor is smaller than MTP.DeviceRevision.Minor
+871            If the minor version on the MTP side is larger, the MTP has new interface information that was
+872            not yet loaded on the PEA at the time the version verification was carried out. Thus, the
+873            compatibility between PEA and MTP is not given.
+874
+
+
+875   Patch level
+
+876   A change at patch level shall only be used for textual corrections without concept or
+877   specification changes. Thus, a change at patch level has no effect on the compatibility between
+878   PEA and MTP.
+
+879   11.8.4    Instance Verification Workflow
+
+880   The instance verification workflow is used to determine during commissioning whether the
+881   correct PEA instances are used at a specific location within the Modular Plant. During
+882   engineering, the PEA instances to be used within the plant are selected from a range of PEA
+883   instances. After its activation, the POL shall compare the correctness of the planned setup by
+884   comparing the ProductInstanceUri in the interface of the PEA and the offline planning. If it is
+885   determined that the online and the offline information are not the same, the operator shall be
+886   informed, and appropriate measures shall be offered to react to the discrepancy.
+
+887   11.8.5    Internal Configuration Changes in the PEA
+
+888   The software of a PEA may have several configuration or setting options that may not be
+889   accessible via the information technology interface. Reasons for this may be that there are no
+890   standardized interfaces for this information, or changeability via the MTP interface is not desired
+891   by the PEA manufacturer. In order to make these changes visible via the standardized
+892   information interface, a so-called RevisionCounter is introduced, which should be increased in
+893   the event of any configuration change within the PEA. By tracking this revision information, the
+894   POL can be made aware of a configuration change within the PEA. The RevisionCounter shall
+895   be reset to 0 by loading new software, recognizable by a new software revision. The
+896   RevisionCounter can only be accessed at runtime. The RevisionCounter attribute defined in the
+897   SUC PeaInformationLabel (MTP Part 3) is used for this purpose. A change of the internal
+898   RevisionCounter has no effect on the compatibility between PEA and MTP.
+899
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                          Page 60 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models              Version d0.9
+
+
+900   12 MTP Aspect – AttachmentSet
+
+901   12.1   Versioning and Profile Information
+
+902   The AttachmentSet is an optional aspect model of the MTP for the transportation of any 3rd
+903   party content in a package. There is only the Base profile available for now. For the versioning
+904   of the profile AttachmentSet.Base the following version definition is used (Table 35).
+
+905          Table 35 – Profile and version information of the MTP aspect AttachmentSet
+
+                             MTP Profile “AttachmentSet.Base”
+                             Profile ID   ModuleTypePackage:AttachmentSet.Base
+                             Version      2.0.0
+
+906
+
+
+907   12.2   Concept of Attachments
+908   To supplement further information in the form of e.g., data sheets, drawings or manuals,
+909   additional documents may be added to the MTP as attachments.
+910
+911   For this purpose, attachments shall be combined into attachment groups. Each attachment
+912   group shall be placed in the IH Attachments, which is referenced from the table of contents of
+913   the aspects in the Manifest. An attachment group includes multiple references to filed
+914   documents (see the MTP’s packaging format in Section 14). These groups may be assigned
+915   with a RefID according to the LinkedObject concept to an object in the MTP or to the entire
+916   PEA. In the latter case, the RefID shall reference the PeaInformationLabel.
+917
+918   For example, an attachment group with a RefID referencing the PeaInformationLabel, it applies
+919   to the entire PEA and contains e.g., declarations of conformity or manuals. If a RefID is
+920   referenced to a DataAssembly, a manual or design drawings can also be attached for this.
+921
+922   The use of this aspect is optional and can be used as required according to the following
+923   specifications.
+924
+
+925   12.3   Overview of Aspect Definitions
+
+926   Corresponding to the MTP Aspect AttachmentSet all used definitions are defined in their
+927   AutomationML libraries.
+
+928   SUCL MTPAttachmentSUCLib for SystemUnitClasses
+
+929   ICL MTPAttachmentICLib for InterfaceClasses
+
+930   A ATL isn’t needed because no ATs are defined so far.
+
+931   A RCL isn’t needed because no RCs are defined so far.
+
+932   All definitions that shall be used to model the MTP Aspect AttachmentSet are defined in the
+933   following sub sections and are shown as overview in Figure 7.
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                    Page 61 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models         Version d0.9
+
+
+
+
+934
+
+
+935   Figure 7 – Overview of the model and DataAssembly definitions of the AttachmentSet
+936
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 62 of 86 Pages
+                  Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                         Version d0.9
+937
+
+
+938   12.4     Aspect-related Model Definitions
+
+939   12.4.1     InstanceHierarchy Attachments
+
+940   The IH Attachments, specified in Table 36, represents the entry point of the AttachmentSet
+941   information model.
+
+942                       Table 36 - Instance Hierarchy Definition of the IH Attachments
+
+                                        Module Type Package - Model Definition
+       Name                       Attachments
+       Type                       InstanceHierarchy (IH)
+       Description                Root element for all attachment groups
+       Version                    ModuleTypePackage:AttachmentSet.Base V2.0.0
+       AutomationML Properties
+       Name                       Type                Description
+       ID                         xs:string           ID of the Instance Hierarchy
+       Comment
+          –
+                                          AutomationML Object - Constraints
+       Allowed Children           [0..*] IE of SUC AttachmentGroup
+
+943
+
+
+944   12.4.2     SystemUnitClassLibrary MTPAttachmentSUCLib
+
+945   The SUCL MTPAttachmentSUCLib, specified in Table 37, defines the base definitions for the
+946   AttachmentSet of a Module Type Package.
+
+947                  Table 37 – Library definition of the SUCL MTPAttachmentSUCLib
+
+                                      Module Type Package - Library Definition
+      Name                       MTPAttachmentSUCLib
+      Type                       SystemUnitClassLibrary (SUCL)
+      Description                Library containing the attachment related SUC model definitions of an MTP
+      Version                    ModuleTypePackage:AttachmentSet.Base V2.0.0
+      AutomationML Properties
+      Name                       Type                 Description
+      –                          –                    –
+      Comment
+          –
+948
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                              Page 63 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+949   12.4.3     SystemUnitClass AttachmentSet
+
+950   The SUC AttachmentSet, specified in Table 38, is derived from the SUC MTPSet and is part of
+951   the SUCL MTPAttachmentSUCLib. It represents the table of contents entry for the Attachments
+952   aspect.
+
+953                      Table 38 – Model definition of the SUC AttachmentSet
+
+                                       Module Type Package - Model Definition
+      Name                      AttachmentSet
+      Type                      SystemUnitClass (SUC)
+      Modifier                  sealed
+      Description               Module Type Package Aspect Set for Attachments
+      AutomationML Path         MTPAttachmentSUCLib/AttachmentSet
+      AutomationML BaseRef      MTPSUCLib/MTPSet
+      RoleClasses               –
+      Version                   ModuleTypePackage:AttachmentSet.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                  Description
+      –                         –                     –
+      AutomationML Attributes
+      Name                      Type                  Description                       AttributeType Reference
+      –                         –                     –                                 –
+      Comment
+       –
+                                    AutomationML Object - Instance Constraints
+      Allowed Parents           (no further constraints given)
+                                [1] EI of IC AspectSetReference which
+      Allowed Children
+                                refers via ID to an IH containing [0..*] IE of SUC AttachmentGroup
+954
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 64 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                         Version d0.9
+
+955   12.4.4     SystemUnitClass AttachmentGroup
+
+956   The SUC AttachmentGroup, specified in Table 39, is derived from the LinkedObject and is part
+957   of the SUCL AttachmentSUCLib. It represents a list of referenced documents and is to be
+958   inserted in the IH referenced by the AttachmentSet. This IH thus contains a listing of all
+959   AttachmentGroups.
+
+960                      Table 39 – Model definition of the SUC AttachmentGroup
+
+                                          Module Type Package - Model Definition
+      Name                       AttachmentGroup
+      Type                       SystemUnitClass (SUC)
+      Modifier                       –
+      Description                Grouping Object for related and non-related Attachments
+      AutomationML Path          MTPAttachmentSUCLib/AttachmentGroup
+      AutomationML BaseRef       MTPSUCLib/LinkedObject
+      RoleClasses                –
+      Version                    ModuleTypePackage:AttachmentSet.Base V2.0.0
+      AutomationML Properties
+      Name                       Type                   Description
+      –                          –                      –
+      AutomationML Attributes
+      Name                       Type                   Description                     AttributeType Reference
+      RefID a)                   xs:string              RefID information               RefIDAttributeType
+      Comment
+      a) RefID may be filled with the RefID of any described entity. When the AttachmentGroup shall be related to
+      the PEA, the RefID shall be set according to the RefID of the IE from SUC PeaInformationLabel (MTP Part 3).
+
+                                         AutomationML Object - Instance Constraints
+      Allowed Parents            IH to which an IE of SUC AttachmentSet relates via EI of IC AspectSetReference
+      Allowed Children           [1..*] EIs of IC AttachmentReference
+961
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 65 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                          Version d0.9
+
+962   12.4.5    InterfaceClassLibrary MTPAttachmentICLib
+
+963   The ICL MTPAttachmentICLib, specified in Table 40, defines the base interface class definitions
+964   for the AttachmentSet of a Module Type Package.
+
+965                 Table 40 – Library definition of the SUCL MTPAttachmentICLib
+
+                                     Module Type Package - Library Definition
+      Name                      MTPAttachmentICLib
+      Type                      InterfaceClassLibrary (ICL)
+      Description               Library containing the attachment related IC model definitions of an MTP
+      Version                   ModuleTypePackage:AttachmentSet.Base V2.0.0
+      AutomationML Properties
+      Name                      Type                 Description
+      –                         –                    –
+      Comment
+          –
+966
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 66 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+      Module Type Package – Part 1: General Concept, Interfaces and Models                          Version d0.9
+
+967   12.4.6     InterfaceClass AttachmentReference
+
+968   The IC AttachmentReference, specified in Table 41, is derived from the type
+969   ExternalDataReference and is defined in the AttachmentICLib. It has a variable refURI with a
+970   relative path specification starting from root folder in the MTP (physical package of the MTP,
+971   see Section 14.1). The variable MIMEType provides information about the format of the
+972   document. The variable DocumentType is used to define the type of attachment, although this
+973   standard does not define values for this – these are to be defined by other industry-specific or
+974   application-specific parts of MTP Specification or other specifications.
+
+975                      Table 41 – Model definition of the IC AttachmentReference
+
+                                        Module Type Package - Model Definition
+      Name                 AttachmentReference
+      Type                 InterfaceClass (IC)
+      Modifier             sealed
+      Description          Reference Object for an attached document
+      AutomationML
+                           MTPAttachmentICLib/AttachmentReference
+      Path
+      AutomationML         AutomationMLInterfaceClassLib/AutomationMLBaseInterface/ExternalDataConnector/
+      BaseRef              ExternalDataReference
+      Version              ModuleTypePackage:AttachmentSet.Base V2.0.0
+      AutomationML Properties
+      Name                 Type              Description
+      –                    –                 –
+      AutomationML Attributes
+      Name                 Type              Description            AttributeType Reference
+                                             Path to the attached
+                                                                    AutomationMLBaseAttributeTypeLib/
+      refURI               xs:anyUri         document from the
+                                                                    refURI a)
+                                             root folder
+                                             MIMEType of the        AutomationMLBaseAttributeTypeLib/
+      MIMEType             xs:string
+                                             attached document      MIMEType a)
+                                             Document Type
+      DocumentType         xs:string         Identifier of the
+                                             attached document
+      Comment
+      a)
+         Those variables are derived from AutomationMLBaseInterface/ExternalDataConnector/
+      ExternalDataReference. They are mentioned here for the sake of completeness, as they are not specified in
+      the MTP standard itself.
+
+                                       AutomationML Object - Instance Constraints
+      Allowed Parents      IE of SUC AttachmentGroup
+      Allowed Children     (no children allowed)
+976
+
+
+
+
+      © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 67 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models               Version d0.9
+
+
+977    13 MTP Aspect – TextSet
+
+978    13.1   Versioning and Profile Information
+
+979    The Texts are an optional aspect model of the MTP. There is only the Base profile. For the
+980    versioning of the profile TextSet.Base the following version definition shall be used (Table 42).
+
+981              Table 42 – Profile and version information of the MTP aspect TextSet
+
+                              MTP Profile “TextSet.Base”
+                              Profile ID       ModuleTypePackage:TextSet.Base
+                              Version          2.0.0
+
+982
+
+
+983    13.2   Conceptual Aspect Details
+
+984    In general, many concepts within the automation domain are using lists of numbers to express
+985    different things. Those lists of numbers are simple for computers but hard for humans to
+986    interpret. Goal of the MTP Aspect TextSet is to provide a simple expressive mechanism to add
+987    human understandable texts to computer interpretable numbers.
+
+988    In the different parts of the MTP specification a lot of numbers are used to express several
+989    information which must be displayed in a clear and sometimes language-dependent human
+990    readable look and feel. For exactly those use cases this aspect set provides a base model of
+991    TextDefinition and Texts. Texts are used to encapsulate a string which can be provided single
+992    or multi-language based and is defined in relation to a concrete value.
+
+993    13.3   Overview of Aspect Definitions
+
+994    The model for describing textual content in the ModuleTypePackage is introduced in this
+995    standard. With the enumeration definitions one applications of the text model is introduced in
+996    this part of the standard. Other parts will also rely on the underlying text model.
+
+997    Corresponding to the MTP Aspect TextSet all used definitions are defined in their AutomationML
+998    libraries.
+
+999    SUCL MTPTextSUCLib for SystemUnitClasses
+
+1000   ATL MTPTextATLib for AttributeTypes
+
+1001   RCL MTPTextRCLib for RoleClasses
+
+1002   An ICL isn’t needed because no ICs are defined so far.
+
+1003   All definitions that shall be used to model the MTP Aspect TextSet are defined in the following
+1004   sub sections and are shown as overview in Figure 8.
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                     Page 68 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models             Version d0.9
+
+
+
+
+1005
+
+
+1006        Figure 8 – Overview of the model and DataAssembly definitions of the TextSet
+
+1007   The base model provides a TextSet, which is derived from the SUC MTPSet and is to be inserted
+1008   according to the modelling of the table of contents of the MTP Manifest. The SUC TextSet
+1009   thereby refers to a separate IH which contains a list of all instances derived from the SUC
+1010   TextDefinition. An RC HasTextReference derivation can be used to reference an instance of a
+1011   SUC TextDefinition derivation.
+
+1012   In the context of this part of the standard, the RC HasEnumDefinition is introduced as
+1013   specialization of the RC HasTextReference. This reference shall be added to the corresponding
+1014   parent elements as RoleRequirement.
+
+1015   In the context of this part of the standard, the SUC EnumDefinition is introduced as
+1016   specialization of the SUC TextDefinition. Instances of this derivation shall be added to the IH
+1017   referenced by the TextSet.
+
+1018   By modelling as a RoleRequirement, it is possible to explicitly attach the TextRef attribute to
+1019   the RoleRequirement element.
+
+1020   By using RoleClasses (RC), this model corresponds to an N:1 relationship – N model entities
+1021   can reference one and the same Text model entity.
+1022
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                   Page 69 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                             Version d0.9
+
+1023   13.4     Aspect-related Model Definitions
+
+1024   13.4.1     InstanceHierarchy Texts
+
+1025   The IH Texts, specified in Table 43, represents the entry point of the TextSet information model.
+
+1026                        Table 43 – Instance Hierarchy Definition of the IH Texts
+
+                                         Module Type Package - Model Definition
+        Name                      Texts
+        Type                      InstanceHierarchy (IH)
+        Description               Root element for all text definitions
+        Version                   ModuleTypePackage:TextSet.Base V2.0.0
+        AutomationML Properties
+        Name                      Type                  Description
+        ID                        xs:string             ID of the Instance Hierarchy
+        Comment
+         –
+
+                                           AutomationML Object - Constraints
+        Allowed Children          [0..*] IE of SUC TextDefinition
+
+1027
+
+
+1028   13.4.2     SystemUnitClassLibrary MTPTextSUCLib
+
+1029   The SUCL MTPTextSUCLib, specified in Table 44, defines the base definitions for the TextSet
+1030   of a Module Type Package.
+
+1031                       Table 44 – Library definition of the SUCL MTPTextSUCLib
+
+                                       Module Type Package - Library Definition
+       Name                       MTPTextSUCLib
+       Type                       SystemUnitClassLibrary (SUCL)
+       Description                Library containing the text related SUC model definitions of an MTP
+       Version                    ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                       Type                  Description
+       –                          –                     –
+       Comment
+           –
+1032
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                Page 70 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+1033   13.4.3     SystemUnitClass TextSet
+
+1034   The SUC TextSet, specified in Table 45, represents the entry of the SUC TextSet in the table
+1035   of contents of the MTP Manifest and therefore is derived from the SUC MTPSet. It references
+1036   an IH in the MTP, which contains all instances of a TextDefinition derivation as a flat list.
+
+1037                          Table 45 – Model definition of the SUC TextSet
+
+                                        Module Type Package - Model Definition
+       Name                      TextSet
+       Type                      SystemUnitClass (SUC)
+       Modifier                  sealed
+       Description               Module Type Package Aspect Set for Text Definitions
+       AutomationML Path         MTPTextSUCLib/TextSet
+       AutomationML BaseRef      MTPSUCLib/MTPSet
+       RoleClasses               –
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                  Description
+       –                         –                     –
+       AutomationML Attributes
+       Name                      Type                  Description                         AttributeType Reference
+       –                         –                     –                                   –
+       Comment
+        –
+                                     AutomationML Object - Instance Constraints
+       Allowed Parents           (no further constraints given)
+                                 [1] EI of IC AspectSetReference which
+       Allowed Children
+                                 refers via ID to an IH containing [0..*] IE of SUC TextDefinition
+1038
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                  Page 71 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                              Version d0.9
+
+1039   13.4.4     SystemUnitClass Text
+
+1040   The SUC Text, specified in Table 46, is an abstract model definition for the description of a Text
+1041   element with the possibility of multi-language modelling.
+
+1042                                Table 46 – Model definition of the SUC Text
+
+                                           Module Type Package - Model Definition
+       Name                         Text
+       Type                         SystemUnitClass (SUC)
+       Modifier                     abstract
+       Description                  Model definition for a text
+       AutomationML Path            MTPTextSUCLib/Text
+       AutomationML BaseRef         –
+       RoleClasses                  [1] AutomationMLBaseRoleClassLib/AutomationMLBaseRole (SRC)
+       Version                      ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                         Type                  Description
+       –                            –                     –
+       AutomationML Attributes
+       Name                         Type                  Description                        AttributeType Reference
+                                                                                             StaticValueAttributeType |
+       Text a)                      xs:string             multi-language text                MultiLanguageTextAttribute
+                                                                                             b)
+
+
+       Comment
+       a) The value of the TextAttribute is set to the value of the default language.
+       b) If this text is available in multiple languages, the AttributeTypeReference shall be set to
+       MultiLanguageTextAttribute
+
+                                        AutomationML Object - Instance Constraints
+       Allowed Parents              (no general constraints given)
+       Allowed Children             (no general constraints given)
+1043
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                     Page 72 of 86 Pages
+                      Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                        Version d0.9
+
+1044   13.4.5     SystemUnitClass TextDefinition
+
+1045   The SUC TextDefinition, specified in Table 47, is an abstract model element from which all Text
+1046   definitions inherit that are to be contained in the IH referenced by the TextSet.
+
+1047                       Table 47 – Model definition of the SUC TextDefinition
+
+                                        Module Type Package - Model Definition
+       Name                      TextDefinition
+       Type                      SystemUnitClass (SUC)
+       Modifier                  abstract
+       Description               Base model definition for a text definition
+       AutomationML Path         MTPTextSUCLib/TextDefinition
+       AutomationML BaseRef      –
+       RoleClasses               [1] AutomationMLBaseRoleClassLib/AutomationMLBaseRole (SRC)
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                  Description
+       –                         –                     –
+       AutomationML Attributes
+       Name                      Type                  Description                     AttributeType Reference
+       –                         –                     –                               –
+       Comment
+       –
+                                     AutomationML Object - Instance Constraints
+       Allowed Parents           IH to which an IE of SUC TextSet relates via EI of IC AspectSetReference
+       Allowed Children          (no general constraints given)
+1048
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                              Page 73 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                 Version d0.9
+
+1049   13.4.6     SystemUnitClass EnumDefinition
+
+1050   The SUC EnumDefinition, specified in Table 48, is derived from the SUC TextDefinition and
+1051   describes the list of entries of the enumeration. It contains a list of child elements in the number
+1052   of EnumItems present.
+
+1053                      Table 48 – Model definition of the SUC EnumDefinition
+
+                                        Module Type Package - Model Definition
+       Name                      EnumDefinition
+       Type                      SystemUnitClass (SUC)
+       Modifier                  sealed
+       Description               Model definition for an enumeration
+       AutomationML Path         MTPTextSUCLib/TextDefinition/EnumDefinition
+       AutomationML BaseRef      MTPTextSUCLib/TextDefinition
+       RoleClasses               –
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                  Description
+       –                         –                     –
+       AutomationML Attributes
+       Name                      Type                  Description                AttributeType Reference
+       –                         –                     –                          –
+       Comment
+       –
+
+                                     AutomationML Object - Instance Constraints
+       Allowed Parents           (no further constraints given)
+       Allowed Children          [1..*] IE of SUC EnumItem
+1054
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                        Page 74 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                        Version d0.9
+
+1055   13.4.7     SystemUnitClass EnumItem
+
+1056   The SUC EnumItem, specified in Table 49, is derived from the SUC Text and describes an entry
+1057   in the list of the EnumDefinition. Thereby the property Name contains the number of the number-
+1058   text relationship. The textual information is entered into the Text attribute and the multi-
+1059   language modelling can also be included.
+
+1060                        Table 49 – Model definition of the SUC EnumItem
+
+                                        Module Type Package - Model Definition
+       Name                      EnumItem
+       Type                      SystemUnitClass (SUC)
+       Modifier                  sealed
+       Description               Model definition for an enumeration item
+       AutomationML Path         MTPTextSUCLib/TextDefinition/EnumDefinition/EnumItem
+       AutomationML BaseRef      MTPTextSUCLib/Text
+       RoleClasses               –
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                    Description
+       Name                      xs:string               unique number of the enumeration item
+       AutomationML Attributes
+       Name                      Type                    Description                     AttributeType Reference
+       –                         –                       –                               –
+       Comment
+       –
+
+                                     AutomationML Object - Instance Constraints
+       Allowed Parents           IE of SUC EnumDefinition
+       Allowed Children          (no children allowed)
+1061
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 75 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+1062   13.4.8    RoleClassLibrary MTPTextRCLib
+
+1063   The RCL MTPTextRCLib, specified in Table 50, defines the base role class definitions for the
+1064   TextSet of a Module Type Package.
+
+1065                   Table 50 – Library definition of the SUCL MTPTextRCLib
+
+                                      Module Type Package - Library Definition
+       Name                      MTPTextRCLib
+       Type                      RoleClassLibrary (RCL)
+       Description               Library containing the text related RC model definitions of an MTP
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                 Description
+       –                         –                    –
+       Comment
+       –
+1066
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 76 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                          Version d0.9
+
+1067   13.4.9     RoleClass HasTextReference
+
+1068   The RC HasTextReference, specified in Table 51, defines an abstract reference information to
+1069   any element derived from the SUC TextDefinition. It has an attribute TextRef, which is of the
+1070   data type xs:string and contains the GUID of the referenced object. This type of interpretation
+1071   is defined by the TextRefAttributeType.
+
+1072                     Table 51 – Model definition of the RC HasTextReference
+
+                                        Module Type Package - Model Definition
+       Name                      HasTextReference
+       Type                      RoleClass (RC)
+       Modifier                  abstract
+       Description               Model definition for text references
+       AutomationML Path         MTPTextRCLib/HasTextReference
+       AutomationML BaseRef      –
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                  Description
+       –                         –                     –
+       AutomationML Attributes
+       Name                      Type                  Description                        AttributeType Reference
+                                                       object ID of the text definition
+       TextRef                   xs:string                                                TextRefAttributeType
+                                                       element
+       Comment
+       –
+                                     AutomationML Object - Instance Constraints
+       Allowed Annotations       (no annotations allowed)
+1073
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                Page 77 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+1074   13.4.10 RoleClass HasEnumDefinition
+
+1075   The RC HasEnumDefinition, specified in Table 52, is derived from the RC HasTextReference
+1076   and represents a relation between an object and an EnumDefiniton type. The use of an
+1077   EnumDefinition is only specified for DInt DataAssembly definitions (see MTP Part 3, 4). Each
+1078   DInt DataAssembly definition may have a maximum of one EnumDefinition.
+
+1079                     Table 52 – Model definition of the RC HasEnumDefinition
+
+                                         Module Type Package - Model Definition
+       Name                       HasEnumDefinition a)
+       Type                       RoleClass (RC)
+       Modifier                   sealed
+       Description                Model definition for an enumeration reference
+       AutomationML Path          MTPTextRCLib/HasTextReference/HasEnumDefinition
+       AutomationML BaseRef       MTPTextRCLib/HasTextReference
+       Version                    ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                       Type                 Description
+       –                          –                    –
+       AutomationML Attributes
+       Name                       Type                 Description                        AttributeType Reference
+       –                          –                    –                                  –
+       Comment
+       a)
+          The usage of the HasEnumDefinition is only allowed one per each of the following DataAssembly definitions
+       or its derivations – DIntView, DIntMan, DIntServParam, DIntProcessValueIn. If other DataAssemblies can be
+       extended with an EnumDefinition, this capability shall be explicitly named.
+
+                                      AutomationML Object - Instance Constraints
+                                  IE of SUC DIntView (MTP Part 3) as SRC
+                                  IE of SUC DIntMan (MTP Part 3) as SRC
+       Allowed Annotations
+                                  IE of SUC DIntServParam (MTP Part 4) as SRC
+                                  IE of SUC DIntProcessValueIn (MTP Part 4) as SRC
+1080
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                Page 78 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                           Version d0.9
+
+1081   13.4.11 AttributeTypeLibrary MTPTextATLib
+
+1082   The ATL MTPTextATLib, specified in Table 53, defines the base attribute types for the TextSet
+1083   of a Module Type Package.
+
+1084                    Table 53 – Library definition of the ATL MTPTextATLib
+
+                                      Module Type Package - Library Definition
+       Name                      MTPTextATLib
+       Type                      AttributeTypeLibrary (ATL)
+       Description               Library containing the text related AT model definitions of an MTP
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Properties
+       Name                      Type                 Description
+       –                         –                    –
+       Comment
+       –
+1085
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                               Page 79 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                     Version d0.9
+
+1086   13.4.12 AttributeType TextRefAttributeType
+
+1087   The AT TextRefAttributeType, specified in Table 54, defines that an attribute of this
+1088   AttributeType contains a GUID of a text definition or one of its derivatives as string information.
+1089   Thus, an object-text reference is inserted.
+
+1090                   Table 54 – Model definition of the AT TextRefAttributeType
+
+                                        Module Type Package - Model Definition
+       Name                      TextRefAttributeType
+       Type                      AttributeType (AT)
+       Modifier                  sealed
+       Description               Model definition for text reference attribute type
+       AutomationML Path         MTPTextATLib/TextRefAttributeType
+       AutomationML BaseRef      MTPATLib/IDReferenceType
+       DataType                  xs:string
+       Version                   ModuleTypePackage:TextSet.Base V2.0.0
+       AutomationML Attributes
+       Name                      Type                  Description                    AttributeType Reference
+       –                         –                     –                              –
+       Comment
+       –
+1091
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                            Page 80 of 86 Pages
+                     Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models              Version d0.9
+
+
+1092   14 MTP Packaging Format
+
+1093   The basis for the packaging format of the MTP are the Open Packaging Conventions (OPC)
+1094   specified in ISO/IEC 29500-2, which describe an abstract package model based on packages,
+1095   parts, and relationships.
+
+1096   A package describes a container that contains a series of parts (files or resources). Each file
+1097   has a unique, URI-compliant name within the package. In addition, the type of each file is
+1098   indicated by the MIME type. Relationships can be used to define relationships between the
+1099   package itself and individual parts or between parts themselves, the meaning of which is
+1100   defined in more detail via a RelationshipType. This enables the definition of a logical model of
+1101   the structure or content of packages.
+1102
+1103   This abstract model of OPC for MTP is defined in the following sub sections.
+
+1104   14.1   Physical Package of the Module Type Package
+
+1105   The mapping to the ZIP format according to ISO/IEC 29500-2 shall be used as the physical
+1106   package, so that an MTP file is always transported as a ZIP-compressed file. *.mtp shall be
+1107   specified as the file extension for MTP packages. The MIME type of an MTP package shall be
+1108   “application/mtp”.
+
+1109   Every MTP package shall contain the AutomationML-based Manifest and its referenced CAEX
+1110   XML Schema (XSD) in the root directory of the package. Attachments according to Section 12
+1111   shall be stored in a folder with the name “Attachments”. Structuring of attachments into any
+1112   substructures within the attachments folder is permitted.
+
+1113   14.2   Logical Model of the Module Type Package
+
+1114   Following the Best Practice Recommendation of the AutomationML Container [4], the following
+1115   relationship types and MIME types shall be used:
+
+1116   For the AutomationML-based manifest file within the MTP package:
+1117    Relationship type: "http://schemas.automationml.org/container/relationship/RootDocument"
+1118    MIME type: "model/vnd.automationml+xml"
+1119    File name shall be manifest.aml
+1120
+1121   For the CAEX Schema of the AutomationML-based MTP file:
+1122    Relationship type: "http://schemas.automationml.org/container/relationship/CAEXSchema"
+1123    MIME type: "text/xml"
+1124    File Name shall be CAEX_ClassModel_V3.0.xsd
+1125
+1126   For attachments in the “Attachments” folder:
+1127    Relationship type: http://schemas.automationml.org/container/relationship/AnyContent
+1128    MIME type: is to be set user-defined according to the referenced attachment
+1129    File Names shall be defined by the MTP creator
+1130
+
+
+1131   Figure 9 shows an exemplary structure of an MTP according to the Open Packaging
+1132   Conventions with the Manifest in the file “manifest.aml”, the XML Schema in the file
+1133   “CAEX_ClassModel_V3.0.xsd” and an optional appendix in the file “Manual.pdf”.
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                    Page 81 of 86 Pages
+                    Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models         Version d0.9
+
+
+
+
+1134
+
+
+1135         Figure 9 – Exemplary structure of an MTP according to the Open Packaging
+1136                                        Conventions
+1137
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 82 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models                                   Version d0.9
+
+1138   14.3    Source Document Information of the Package
+
+1139   Every MTP file shall contain at least one source of origin modelled as a
+1140   SourceDocumentInformation node underneath the CAEXFile node. A source of origin describes
+1141   a tool and a project source that was used to create the MTP file. MTP files may have multiple
+1142   sources of origin. All mandatory and optional attributes are listed in Table 55.
+
+1143   The sources of origin are not to be confused with the actual creator of the MTP file or vendor
+1144   of the PEA.
+
+1145                         Table 55 – Definition of the SourceDocumentInformation
+
+        Attributes of SourceDocumentInformation
+        AttributeName                Description
+        OriginName                   Name of tool. May change over time.
+        OriginID                     Unique identifier of tool. This ID shall not change over its lifetime.
+        OriginVendor a)              Name of tool vendor.
+        OriginVendorUrl a)           URL of tool vendor.
+        OriginVersion                Version of tool.
+        OriginRelease a)             Additional release information of tool.
+        LastWritingDateTime          Timestamp of tool’s last write to file.
+        OriginProjectTitle a)        Name of project that was used in tool.
+                                     Unique identifier of project that was used in tool. This ID shall not change over
+        OriginProjectID a)
+                                     projects lifetime.
+        a) optional
+1146
+1154
+1153
+1152
+1151
+1150
+1149
+1148
+1147
+
+
+1155   14.4    Extensibility
+
+1156   By using the Open Packaging Conventions, the MTP packaging format basically provides the
+1157   possibility to transport further files with any content. Specific contents and thus extensions of
+1158   both the logical and the physical model can be defined by further parts of the MTP Specification,
+1159   other standards or similar.
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                                     Page 83 of 86 Pages
+                        Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models          Version d0.9
+
+
+1160   15 Requirements for Certification Tests
+
+1161   Any product, that state compliance to the MTP specification, shall be certified. The
+1162   requirements for the certification test are defined in the corresponding test specification
+1163   documents [6].
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 84 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+       Module Type Package – Part 1: General Concept, Interfaces and Models          Version d0.9
+
+
+1164                                          Bibliography
+
+1165   [1]   Preston-Werner, T.: Semantic Versioning 2.0.0. Available: http://www.semver.org
+1166         (accessed on 16 Mar 2024)
+
+1167   [2]   AutomationML e. V.: Best Practice Recommendations: Naming of related Documents
+1168         and their Versions, Version 1.0.0, December 2016. Available:
+1169         https://www.automationml.org/download-archive/
+
+1170   [3]   AutomationML e. V.: Best Practice Recommendations: Multilingual expressions in
+1171         AutomationML, Version 1.0.0, October 2014. Available:
+1172         https://www.automationml.org/download-archive/
+
+1173   [4]   AutomationML e. V.: Best Practice Recommendations: AutomationML Container,
+1174         Version 1.0.0, October 2017. Available: https://www.automationml.org/download-
+1175         archive/
+
+1176   [5]   VDI 2776-1: Process engineering plants - Modular plants - Fundamentals and planning
+1177         modular plants, VDI, Berlin, Nov. 2020. [Online]. Available:
+1178         https://www.vdi.de/richtlinien/details/vdi-2776-blatt-1-verfahrenstechnische-anlagen-
+1179         modulare-anlagen-grundlagen-und-planung-modularer-anlagen
+
+1180   [6]   PROFIBUS Nutzerorganisation e.V. (PNO): How to get a MTP certificate – Guideline
+1181         for MTP, PI Specification no. TODO, to be published
+
+
+
+
+       © Copyright PNO, NAMUR, ZVEI 2024 – All Rights Reserved                Page 85 of 86 Pages
+                   Draft for Member Review. Do not Claim Conformance!
+MTP Specification
+
+
+
+
+                    
+                          PROFIBUS Nutzerorganisation e. V. (PNO)
+                          PROFIBUS & PROFINET International (PI)
+                          Ohiostrasse 8 ● 76149 Karlsruhe ● Germany
+                          Phone +49 721 986 197 0 ● Fax +49 721 986 197 11
+                          E-mail info@profibus.com
+                          www.profibus.com ● www.profinet.com
+
