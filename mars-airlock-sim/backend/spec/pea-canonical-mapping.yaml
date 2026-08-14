@@ -1,0 +1,76 @@
+version: 1
+kind: underhill.pea.mapping
+metadata:
+  pea_id: AIRLOCK-PEA-001
+  pea_name: Underhill Airlock
+  pea_type: AIRLOCK
+  mtp_profile_version: 1.0.0
+  namespace_uri: urn:underhill:local:pea:AIRLOCK-PEA-001
+  root_path: Objects/Underhill/AirlockPEA
+  opcua_endpoint: opc.tcp://127.0.0.1:4841/underhill/airlock
+
+data_assemblies:
+  types:
+    - name: DA_AirlockStatus
+      fields:
+        - { name: PressurePa, type: f64, unit: Pa }
+        - { name: O2Percent, type: f64, unit: pct }
+        - { name: InnerDoorPositionPct, type: f64, unit: pct }
+        - { name: OuterDoorPositionPct, type: f64, unit: pct }
+        - { name: PumpOn, type: bool }
+    - name: DA_AirlockCommand
+      fields:
+        - { name: OperatorOpenReq, type: bool }
+        - { name: RemoteOpenReq, type: bool }
+        - { name: TargetPressurePa, type: f64, unit: Pa }
+  instances:
+    - name: AirlockStatus
+      type: DA_AirlockStatus
+      browse_path: ServiceSet/AirlockService/DataAssemblies/Indicators/AirlockStatus
+    - name: AirlockCommand
+      type: DA_AirlockCommand
+      browse_path: ServiceSet/AirlockService/DataAssemblies/Control/AirlockCommand
+
+services:
+  - tag: AirlockService
+    procedures:
+      - id: 1
+        name: Proc_DepressurizeForEVA
+      - id: 2
+        name: Proc_PressurizeForEntry
+      - id: 3
+        name: Proc_ManualDoorJog
+    command_handshake:
+      req_id_node: ServiceSet/AirlockService/ServiceControl/ReqId
+      ack_id_node: ServiceSet/AirlockService/ServiceControl/AckId
+      cmd_node: ServiceSet/AirlockService/ServiceControl/Cmd
+      state_node: ServiceSet/AirlockService/ServiceControl/State
+      error_node: ServiceSet/AirlockService/ServiceControl/ErrorCode
+      diag_text_node: ServiceSet/AirlockService/ServiceControl/DiagText
+
+mappings:
+  - id: pressure_to_status
+    source: tag://internal/airlock/pressure_pa
+    sink: da://AirlockStatus.PressurePa
+    direction: tag_to_da
+    transform:
+      - CLAMP(0, 200000)
+    rate_ms: 100
+  - id: pump_to_status
+    source: tag://internal/airlock/pump_on
+    sink: da://AirlockStatus.PumpOn
+    direction: tag_to_da
+    rate_ms: 100
+  - id: operator_open_cmd
+    source: da://AirlockCommand.OperatorOpenReq
+    sink: tag://internal/airlock/cmd/operator_open
+    direction: da_to_tag
+    transform:
+      - BOOL_LATCH
+    rate_ms: 50
+
+compilation_targets:
+  - target: rust_mapping_executor
+    output: backend/generated/airlock_mapping_bindings.rs
+  - target: plc_structured_text
+    output: artifacts/st/airlock_mapping.st

@@ -9,6 +9,7 @@
 target/
 **/*.rs.bk
 Cargo.lock
+!mars-airlock-sim/backend/Cargo.lock
 
 # JavaScript/Node
 node_modules/

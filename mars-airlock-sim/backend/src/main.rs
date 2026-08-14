@@ -1,0 +1,2929 @@
+mod model;
+mod mqtt_uns;
+mod opcua;
+mod opcua_subsystems;
+mod pea_endpoint_host;
+mod sim;
+mod subsystems;
+
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    io::ErrorKind,
+    net::SocketAddr,
+    path::{Path as FsPath, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+
+use axum::{
+    Router,
+    extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade, ws::Message},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+};
+use futures_util::{SinkExt, StreamExt};
+use model::{
+    CommandEnum, CommandRequestFields, CommandResponseFields, CommandSourceEnum, EventEntry,
+    LeakRateUpdateRequest, MtpModesUpdateRequest, OperationMode, ParameterCategory,
+    PermissionsUpdateRequest, ProcedureRequest, ProcedureRequestInput, ProcedureState,
+    ProcedureStatusResponse, SecurityProfileRequest, ServiceDefinition, ServiceParameter,
+    ServiceProcedure, Snapshot,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, broadcast},
+    time,
+};
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
+use tracing::{error, info, warn};
+use zenoh::Session;
+
+use crate::sim::Simulation;
+use crate::subsystems::{EclssSimulation, EclssSnapshot, SabatierSimulation, SabatierSnapshot};
+
+const DEFAULT_NODE_ID: &str = "local";
+const DEFAULT_AIRLOCK_PEA_ID: &str = "AIRLOCK-PEA-001";
+const DEFAULT_ECLSS_PEA_ID: &str = "ECLSS-PEA-001";
+const DEFAULT_SABATIER_PEA_ID: &str = "SABATIER-PEA-001";
+const DEFAULT_OPCUA_PORT_RANGE_MIN: u16 = 4841;
+const DEFAULT_OPCUA_PORT_RANGE_MAX: u16 = 4899;
+const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
+const ECLSS_SERVICE_TAG: &str = "EclssService";
+const SABATIER_SERVICE_TAG: &str = "SabatierService";
+
+/// Combined WebSocket snapshot for 3D visualization frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SystemsSnapshot {
+    timestamp_ms: u64,
+    // Airlock Chamber
+    chamber_pressure: f64,
+    inner_door_open: bool,
+    outer_door_open: bool,
+    // ECLSS System
+    eclss_pressure: f64,
+    eclss_status: String,
+    co2_level: f64,
+    o2_level: f64,
+    thermal_load: f64,
+    humidity: f64,
+    // Sabatier Reactor
+    reactor_temp: f64,
+    reactor_pressure: f64,
+    h2_flow: f64,
+    co2_flow: f64,
+    product_flow: f64,
+    // Status
+    healthy: bool,
+}
+
+#[derive(Clone)]
+struct AppContext {
+    sim: Arc<RwLock<Simulation>>,
+    airlock_runtime: Arc<RwLock<PeaRuntimeState>>,
+    eclss_runtime: Arc<RwLock<PeaRuntimeState>>,
+    sabatier_runtime: Arc<RwLock<PeaRuntimeState>>,
+    eclss_operator_state: Arc<RwLock<SubsystemOperatorState>>,
+    sabatier_operator_state: Arc<RwLock<SubsystemOperatorState>>,
+    eclss_sim: Arc<RwLock<EclssSimulation>>,
+    sabatier_sim: Arc<RwLock<SabatierSimulation>>,
+    pea_opcua_endpoints: Arc<HashMap<String, String>>,
+    zenoh_session: Option<Arc<Session>>,
+    mqtt_uns: Option<Arc<mqtt_uns::MqttUnsPublisher>>,
+    node_id: String,
+    snapshots_tx: broadcast::Sender<Snapshot>,
+    systems_snapshots_tx: broadcast::Sender<SystemsSnapshot>,
+    opcua_control: opcua::OpcuaControl,
+    next_client_id: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct PeaRuntimeState {
+    pub(crate) deployed: bool,
+    pub(crate) running: bool,
+    pub(crate) last_transition_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SubsystemOperatorState {
+    operation_mode: OperationMode,
+    source_mode: CommandSourceEnum,
+    command_en: bool,
+    command_en_reason: String,
+    operator_control_enabled: bool,
+    remote_control_enabled: bool,
+}
+
+impl Default for SubsystemOperatorState {
+    fn default() -> Self {
+        Self {
+            operation_mode: OperationMode::Auto,
+            source_mode: CommandSourceEnum::OperatorUi,
+            command_en: true,
+            command_en_reason: String::new(),
+            operator_control_enabled: true,
+            remote_control_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PeaServiceCommandRequest {
+    source: Option<String>,
+    sequence_id: u32,
+    command: CommandEnum,
+    #[serde(default)]
+    param1: f64,
+    #[serde(default)]
+    param2: f64,
+    #[serde(default = "default_execute_true")]
+    execute: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubsystemOperatorStateUpdateRequest {
+    operation_mode: Option<OperationMode>,
+    source_mode: Option<CommandSourceEnum>,
+    command_en: Option<bool>,
+    command_en_reason: Option<String>,
+    operator_control_enabled: Option<bool>,
+    remote_control_enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OpcuaPortAllocationStore {
+    version: u32,
+    allocations: BTreeMap<String, u16>,
+}
+
+impl Default for OpcuaPortAllocationStore {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            allocations: BTreeMap::new(),
+        }
+    }
+}
+
+fn default_execute_true() -> bool {
+    true
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,tower_http=info".into()),
+        )
+        .init();
+
+    let initial_security = std::env::var("AIRLOCK_SECURITY_PROFILE").unwrap_or("NONE".to_string());
+    let forced_airlock_port = std::env::var("AIRLOCK_OPCUA_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("Invalid AIRLOCK_OPCUA_PORT value {value}; expected integer")
+            })
+        })
+        .transpose()?;
+    let forced_eclss_port = std::env::var("ECLSS_OPCUA_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("Invalid ECLSS_OPCUA_PORT value {value}; expected integer")
+            })
+        })
+        .transpose()?;
+    let forced_sabatier_port = std::env::var("SABATIER_OPCUA_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("Invalid SABATIER_OPCUA_PORT value {value}; expected integer")
+            })
+        })
+        .transpose()?;
+
+    let airlock_port = allocate_opcua_port_for_pea(DEFAULT_AIRLOCK_PEA_ID, forced_airlock_port)?;
+    let eclss_port = allocate_opcua_port_for_pea(DEFAULT_ECLSS_PEA_ID, forced_eclss_port)?;
+    let sabatier_port = allocate_opcua_port_for_pea(DEFAULT_SABATIER_PEA_ID, forced_sabatier_port)?;
+
+    let opcua_runtime_config = opcua::OpcuaRuntimeConfig::from_env_with_port(airlock_port);
+    let opcua_endpoint_url = opcua_runtime_config.endpoint_url();
+    let opcua_host = resolve_opcua_advertised_host();
+    let eclss_endpoint_url = build_opcua_endpoint_url(&opcua_host, eclss_port, "/underhill/eclss");
+    let sabatier_endpoint_url =
+        build_opcua_endpoint_url(&opcua_host, sabatier_port, "/underhill/sabatier");
+    info!(
+        "Allocated OPC UA port {} for {} (endpoint {})",
+        opcua_runtime_config.port(),
+        DEFAULT_AIRLOCK_PEA_ID,
+        opcua_endpoint_url
+    );
+    info!(
+        "Reserved OPC UA ports {} ({}) and {} ({})",
+        eclss_port, DEFAULT_ECLSS_PEA_ID, sabatier_port, DEFAULT_SABATIER_PEA_ID
+    );
+
+    let sim = Arc::new(RwLock::new(Simulation::new(
+        initial_security.clone(),
+        opcua_endpoint_url.clone(),
+    )));
+    let node_id = std::env::var("MURPH_NODE_ID").unwrap_or_else(|_| DEFAULT_NODE_ID.to_string());
+    let zenoh_session = match open_zenoh_session().await {
+        Ok(session) => {
+            info!("Connected Underhill backend to Zenoh");
+            Some(Arc::new(session))
+        }
+        Err(err) => {
+            warn!("Zenoh unavailable, continuing without UNS publishing: {err}");
+            None
+        }
+    };
+    let mqtt_uns = mqtt_uns::MqttUnsPublisher::from_env().await.map(Arc::new);
+    let initial_transition_ms = Simulation::now_ms();
+    let airlock_runtime = Arc::new(RwLock::new(PeaRuntimeState {
+        deployed: true,
+        running: true,
+        last_transition_ms: initial_transition_ms,
+    }));
+    let eclss_runtime = Arc::new(RwLock::new(PeaRuntimeState {
+        deployed: true,
+        running: true,
+        last_transition_ms: initial_transition_ms,
+    }));
+    let sabatier_runtime = Arc::new(RwLock::new(PeaRuntimeState {
+        deployed: true,
+        running: true,
+        last_transition_ms: initial_transition_ms,
+    }));
+    let eclss_operator_state = Arc::new(RwLock::new(SubsystemOperatorState::default()));
+    let sabatier_operator_state = Arc::new(RwLock::new(SubsystemOperatorState::default()));
+    let eclss_sim = Arc::new(RwLock::new(EclssSimulation::new()));
+    let sabatier_sim = Arc::new(RwLock::new(SabatierSimulation::new()));
+    let pea_opcua_endpoints = Arc::new(HashMap::from([
+        (
+            DEFAULT_AIRLOCK_PEA_ID.to_string(),
+            opcua_endpoint_url.clone(),
+        ),
+        (DEFAULT_ECLSS_PEA_ID.to_string(), eclss_endpoint_url),
+        (DEFAULT_SABATIER_PEA_ID.to_string(), sabatier_endpoint_url),
+    ]));
+    let (snapshots_tx, _snapshots_rx) = broadcast::channel(256);
+    let (systems_snapshots_tx, _systems_snapshots_rx) = broadcast::channel(256);
+
+    let opcua_control =
+        opcua::spawn_opcua_server(sim.clone(), snapshots_tx.clone(), opcua_runtime_config);
+    opcua_subsystems::spawn_eclss_opcua_server(
+        eclss_sim.clone(),
+        eclss_runtime.clone(),
+        eclss_port,
+        initial_security.clone(),
+    );
+    opcua_subsystems::spawn_sabatier_opcua_server(
+        sabatier_sim.clone(),
+        sabatier_runtime.clone(),
+        sabatier_port,
+        initial_security.clone(),
+    );
+    let context = AppContext {
+        sim,
+        airlock_runtime,
+        eclss_runtime,
+        sabatier_runtime,
+        eclss_operator_state,
+        sabatier_operator_state,
+        eclss_sim,
+        sabatier_sim,
+        pea_opcua_endpoints,
+        zenoh_session,
+        mqtt_uns,
+        node_id,
+        snapshots_tx,
+        systems_snapshots_tx,
+        opcua_control,
+        next_client_id: Arc::new(AtomicU64::new(1)),
+    };
+
+    spawn_simulation_task(context.clone());
+
+    let frontend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../frontend");
+    let index_file = frontend_dir.join("index.html");
+
+    let app = Router::new()
+        .route("/api/health", get(api_health))
+        .route("/api/snapshot", get(api_snapshot))
+        .route("/api/events", get(api_events))
+        .route("/api/mtp/tree", get(api_mtp_tree))
+        .route("/api/v1/pea", get(api_v1_list_peas))
+        .route("/api/v1/pea/{pea_id}", get(api_v1_get_pea))
+        .route("/api/v1/pea/{pea_id}/deploy", post(api_v1_deploy_pea))
+        .route("/api/v1/pea/{pea_id}/start", post(api_v1_start_pea))
+        .route("/api/v1/pea/{pea_id}/stop", post(api_v1_stop_pea))
+        .route("/api/v1/pea/{pea_id}/undeploy", post(api_v1_undeploy_pea))
+        .route("/api/v1/pea/{pea_id}/opcua", get(api_v1_get_pea_opcua))
+        .route(
+            "/api/v1/pea/{pea_id}/mtp/tree",
+            get(api_v1_get_pea_mtp_tree),
+        )
+        .route(
+            "/api/v1/pea/{pea_id}/operator-state",
+            get(api_v1_get_subsystem_operator_state).post(api_v1_set_subsystem_operator_state),
+        )
+        .route("/api/v1/i3x/pea", get(api_v1_i3x_list_peas))
+        .route("/api/v1/i3x/pea/{pea_id}", get(api_v1_i3x_get_pea))
+        .route(
+            "/api/v1/i3x/capability-schema",
+            get(api_v1_i3x_capability_schema),
+        )
+        .route("/api/v1/namespaces", get(api_v1_i3x_namespaces))
+        .route("/api/v1/objecttypes", get(api_v1_i3x_objecttypes))
+        .route(
+            "/api/v1/objecttypes/{element_id}",
+            get(api_v1_i3x_objecttype_by_id),
+        )
+        .route(
+            "/api/v1/relationshiptypes",
+            get(api_v1_i3x_relationshiptypes),
+        )
+        .route(
+            "/api/v1/relationshiptypes/{element_id}",
+            get(api_v1_i3x_relationshiptype_by_id),
+        )
+        .route("/api/v1/objects", get(api_v1_i3x_objects))
+        .route("/api/v1/objects/{element_id}", get(api_v1_i3x_object_by_id))
+        .route(
+            "/api/v1/objects/{element_id}/related",
+            get(api_v1_i3x_related_objects),
+        )
+        .route(
+            "/api/v1/objects/{element_id}/value",
+            get(api_v1_i3x_object_value).put(api_v1_i3x_put_object_value),
+        )
+        .route(
+            "/api/v1/objects/{element_id}/history",
+            get(api_v1_i3x_object_history),
+        )
+        .route(
+            "/api/v1/pea/{pea_id}/services/{service_tag}/command",
+            post(api_v1_pea_service_command),
+        )
+        // MTP Compliance: Phase 2 API endpoints (Parameter Type System & Procedure Calling Convention)
+        .route("/api/v2/pea/{pea_id}/manifest", get(api_v2_get_manifest))
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}",
+            get(api_v2_get_service),
+        )
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}/parameters",
+            get(api_v2_list_service_parameters),
+        )
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}/parameters/{param_name}",
+            get(api_v2_get_parameter).post(api_v2_set_parameter),
+        )
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}/procedures",
+            get(api_v2_list_procedures),
+        )
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}/procedures/{proc_name}",
+            get(api_v2_get_procedure),
+        )
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}/procedures/{proc_name}/request",
+            post(api_v2_request_procedure),
+        )
+        .route(
+            "/api/v2/pea/{pea_id}/services/{service_name}/procedures/{proc_name}/request/{request_id}",
+            get(api_v2_get_procedure_status),
+        )
+        .route("/api/security/profile", post(api_set_security_profile))
+        .route("/api/permissions", post(api_set_permissions))
+        .route("/api/modes", post(api_set_modes))
+        .route("/api/faults/leak-rate", post(api_set_leak_rate))
+        .route("/api/commands/{source}/write", post(api_write_command))
+        .route("/ws", get(ws_handler))
+        .fallback_service(ServeDir::new(frontend_dir).not_found_service(ServeFile::new(index_file)))
+        .layer(TraceLayer::new_for_http())
+        .with_state(context);
+
+    let bind_addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let listener = TcpListener::bind(bind_addr).await?;
+    info!("Mars airlock backend running on http://{}", bind_addr);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn spawn_simulation_task(context: AppContext) {
+    tokio::spawn(async move {
+        let mut ticker = time::interval(Duration::from_millis(50));
+        let mut publish_divider: u64 = 0;
+        let mut uns_divider: u64 = 0;
+
+        loop {
+            ticker.tick().await;
+            publish_divider = publish_divider.wrapping_add(1);
+            uns_divider = uns_divider.wrapping_add(1);
+
+            let maybe_airlock_snapshot = {
+                let mut sim = context.sim.write().await;
+                sim.step(0.05);
+                if publish_divider.is_multiple_of(2) {
+                    Some(sim.snapshot())
+                } else {
+                    None
+                }
+            };
+            let eclss_running = {
+                let runtime = context.eclss_runtime.read().await;
+                runtime.deployed && runtime.running
+            };
+            let eclss_snapshot = {
+                let mut sim = context.eclss_sim.write().await;
+                sim.step(0.05, eclss_running)
+            };
+            let sabatier_running = {
+                let runtime = context.sabatier_runtime.read().await;
+                runtime.deployed && runtime.running
+            };
+            let sabatier_snapshot = {
+                let mut sim = context.sabatier_sim.write().await;
+                sim.step(0.05, sabatier_running, eclss_snapshot.co2_capture_kgph)
+            };
+
+            // Construct combined systems snapshot for 3D visualization frontend
+            if let Some(ref airlock_snap) = maybe_airlock_snapshot {
+                let systems_snap = SystemsSnapshot {
+                    timestamp_ms: Simulation::now_ms(),
+                    // Airlock
+                    chamber_pressure: airlock_snap.pressure_pa / 1000.0, // Convert Pa to kPa
+                    inner_door_open: airlock_snap.inner_door_position_pct > 50.0,
+                    outer_door_open: airlock_snap.outer_door_position_pct > 50.0,
+                    // ECLSS
+                    eclss_pressure: eclss_snapshot.cabin_pressure_kpa / 101.325, // Convert kPa to atm
+                    eclss_status: if eclss_running {
+                        "Operational".to_string()
+                    } else {
+                        "Standby".to_string()
+                    },
+                    co2_level: eclss_snapshot.co2_ppm,
+                    o2_level: eclss_snapshot.o2_percent,
+                    thermal_load: eclss_snapshot.power_kw,
+                    humidity: eclss_snapshot.humidity_pct,
+                    // Sabatier
+                    reactor_temp: sabatier_snapshot.reactor_temp_c,
+                    reactor_pressure: sabatier_snapshot.reactor_pressure_bar * 0.1, // bar to MPa
+                    h2_flow: sabatier_snapshot.h2_feed_kgph,
+                    co2_flow: sabatier_snapshot.co2_feed_kgph,
+                    product_flow: sabatier_snapshot.methane_production_kgph
+                        + sabatier_snapshot.water_production_kgph,
+                    // Status
+                    healthy: !airlock_snap.alarms.high_pressure_alarm_active
+                        && !airlock_snap.alarms.low_pressure_alarm_active
+                        && !airlock_snap.alarms.leak_detected,
+                };
+                let _ = context.systems_snapshots_tx.send(systems_snap);
+            }
+
+            if let Some(snapshot) = maybe_airlock_snapshot {
+                let _ = context.snapshots_tx.send(snapshot.clone());
+                if uns_divider.is_multiple_of(10) {
+                    let runtime_state = *context.airlock_runtime.read().await;
+                    publish_pea_uns(&context, &snapshot, runtime_state).await;
+                }
+            }
+            if uns_divider.is_multiple_of(10) {
+                let eclss_runtime = *context.eclss_runtime.read().await;
+                let eclss_operator_state = context.eclss_operator_state.read().await.clone();
+                publish_subsystem_uns(
+                    &context,
+                    DEFAULT_ECLSS_PEA_ID,
+                    ECLSS_SERVICE_TAG,
+                    subsystem_service_state(eclss_runtime, &eclss_operator_state),
+                    eclss_runtime,
+                    eclss_snapshot.timestamp_ms,
+                    json!({
+                        "co2_ppm": eclss_snapshot.co2_ppm,
+                        "o2_percent": eclss_snapshot.o2_percent,
+                        "co2_capture_kgph": eclss_snapshot.co2_capture_kgph,
+                        "o2_generation_kgph": eclss_snapshot.o2_generation_kgph,
+                        "humidity_pct": eclss_snapshot.humidity_pct,
+                        "water_recovery_pct": eclss_snapshot.water_recovery_pct,
+                        "power_kw": eclss_snapshot.power_kw
+                    }),
+                )
+                .await;
+
+                let sabatier_runtime = *context.sabatier_runtime.read().await;
+                let sabatier_operator_state = context.sabatier_operator_state.read().await.clone();
+                publish_subsystem_uns(
+                    &context,
+                    DEFAULT_SABATIER_PEA_ID,
+                    SABATIER_SERVICE_TAG,
+                    subsystem_service_state(sabatier_runtime, &sabatier_operator_state),
+                    sabatier_runtime,
+                    sabatier_snapshot.timestamp_ms,
+                    json!({
+                        "reactor_temp_c": sabatier_snapshot.reactor_temp_c,
+                        "reactor_pressure_bar": sabatier_snapshot.reactor_pressure_bar,
+                        "co2_feed_kgph": sabatier_snapshot.co2_feed_kgph,
+                        "h2_feed_kgph": sabatier_snapshot.h2_feed_kgph,
+                        "conversion_efficiency_pct": sabatier_snapshot.conversion_efficiency_pct,
+                        "methane_production_kgph": sabatier_snapshot.methane_production_kgph,
+                        "water_production_kgph": sabatier_snapshot.water_production_kgph,
+                        "power_kw": sabatier_snapshot.power_kw
+                    }),
+                )
+                .await;
+            }
+        }
+    });
+}
+
+async fn api_health() -> impl IntoResponse {
+    axum::Json(json!({
+        "status": "ok",
+        "service": "mars-airlock-backend"
+    }))
+}
+
+async fn api_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
+    let snapshot = {
+        let sim = context.sim.read().await;
+        sim.snapshot()
+    };
+    axum::Json(snapshot)
+}
+
+async fn api_events(State(context): State<AppContext>) -> impl IntoResponse {
+    let events: Vec<EventEntry> = {
+        let sim = context.sim.read().await;
+        sim.events()
+    };
+    axum::Json(events)
+}
+
+async fn api_mtp_tree(State(context): State<AppContext>) -> impl IntoResponse {
+    let tree = {
+        let sim = context.sim.read().await;
+        sim.mtp_tree()
+    };
+    axum::Json(tree)
+}
+
+async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoResponse {
+    let (airlock_snapshot, airlock_runtime) = {
+        let sim = context.sim.read().await;
+        let runtime_state = *context.airlock_runtime.read().await;
+        (sim.snapshot(), runtime_state)
+    };
+    let eclss_runtime = *context.eclss_runtime.read().await;
+    let eclss_operator_state = context.eclss_operator_state.read().await.clone();
+    let eclss_snapshot = context.eclss_sim.read().await.snapshot();
+    let sabatier_runtime = *context.sabatier_runtime.read().await;
+    let sabatier_operator_state = context.sabatier_operator_state.read().await.clone();
+    let sabatier_snapshot = context.sabatier_sim.read().await.snapshot();
+    let items = vec![
+        build_airlock_pea_descriptor(&airlock_snapshot, airlock_runtime),
+        build_eclss_pea_descriptor(
+            &context,
+            &eclss_snapshot,
+            eclss_runtime,
+            &eclss_operator_state,
+            DEFAULT_ECLSS_PEA_ID,
+            ECLSS_SERVICE_TAG,
+        ),
+        build_sabatier_pea_descriptor(
+            &context,
+            &sabatier_snapshot,
+            sabatier_runtime,
+            &sabatier_operator_state,
+            DEFAULT_SABATIER_PEA_ID,
+            SABATIER_SERVICE_TAG,
+        ),
+    ];
+    axum::Json(json!({
+        "items": items,
+        "count": 3
+    }))
+}
+
+async fn api_v1_get_pea(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    match pea_id.as_str() {
+        DEFAULT_AIRLOCK_PEA_ID => {
+            let (snapshot, runtime_state) = {
+                let sim = context.sim.read().await;
+                let runtime_state = *context.airlock_runtime.read().await;
+                (sim.snapshot(), runtime_state)
+            };
+            Ok(axum::Json(build_airlock_pea_descriptor(
+                &snapshot,
+                runtime_state,
+            )))
+        }
+        DEFAULT_ECLSS_PEA_ID => {
+            let runtime_state = *context.eclss_runtime.read().await;
+            let operator_state = context.eclss_operator_state.read().await.clone();
+            let snapshot = context.eclss_sim.read().await.snapshot();
+            Ok(axum::Json(build_eclss_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+                DEFAULT_ECLSS_PEA_ID,
+                ECLSS_SERVICE_TAG,
+            )))
+        }
+        DEFAULT_SABATIER_PEA_ID => {
+            let runtime_state = *context.sabatier_runtime.read().await;
+            let operator_state = context.sabatier_operator_state.read().await.clone();
+            let snapshot = context.sabatier_sim.read().await.snapshot();
+            Ok(axum::Json(build_sabatier_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+                DEFAULT_SABATIER_PEA_ID,
+                SABATIER_SERVICE_TAG,
+            )))
+        }
+        _ => Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}"))),
+    }
+}
+
+async fn api_v1_get_pea_opcua(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let Some(endpoint_url) = context.pea_opcua_endpoints.get(&pea_id) else {
+        return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+    };
+
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        let snapshot = {
+            let sim = context.sim.read().await;
+            sim.snapshot()
+        };
+        return Ok(axum::Json(json!({
+            "pea_id": pea_id,
+            "endpoint_url": endpoint_url,
+            "active_security_mode": snapshot.diagnostics.active_security_mode,
+            "security_modes_enabled": snapshot.diagnostics.security_modes_enabled,
+            "namespace_uri": "urn:mars-airlock:mtp",
+        })));
+    }
+
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "endpoint_url": endpoint_url,
+        "active_security_mode": "NONE",
+        "security_modes_enabled": ["NONE"],
+        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id, pea_id),
+        "opcua_online": false
+    })))
+}
+
+async fn api_v1_deploy_pea(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let transition_ms = Simulation::now_ms();
+
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        {
+            let mut runtime = context.airlock_runtime.write().await;
+            runtime.deployed = true;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+
+        let snapshot = {
+            let mut sim = context.sim.write().await;
+            sim.set_modes(MtpModesUpdateRequest {
+                operation_mode: Some(OperationMode::Off),
+                command_en: Some(false),
+                command_en_reason: Some("PEA deployed, not started".to_string()),
+            });
+            sim.snapshot()
+        };
+        let _ = context.snapshots_tx.send(snapshot.clone());
+        let runtime_state = *context.airlock_runtime.read().await;
+        publish_pea_uns(&context, &snapshot, runtime_state).await;
+    } else if pea_id == DEFAULT_ECLSS_PEA_ID {
+        {
+            let mut runtime = context.eclss_runtime.write().await;
+            runtime.deployed = true;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+        let runtime = *context.eclss_runtime.read().await;
+        let operator_state = context.eclss_operator_state.read().await.clone();
+        let snap = context.eclss_sim.read().await.snapshot();
+        publish_subsystem_uns(
+            &context,
+            DEFAULT_ECLSS_PEA_ID,
+            ECLSS_SERVICE_TAG,
+            subsystem_service_state(runtime, &operator_state),
+            runtime,
+            snap.timestamp_ms,
+            serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
+        )
+        .await;
+    } else if pea_id == DEFAULT_SABATIER_PEA_ID {
+        {
+            let mut runtime = context.sabatier_runtime.write().await;
+            runtime.deployed = true;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+        let runtime = *context.sabatier_runtime.read().await;
+        let operator_state = context.sabatier_operator_state.read().await.clone();
+        let snap = context.sabatier_sim.read().await.snapshot();
+        publish_subsystem_uns(
+            &context,
+            DEFAULT_SABATIER_PEA_ID,
+            SABATIER_SERVICE_TAG,
+            subsystem_service_state(runtime, &operator_state),
+            runtime,
+            snap.timestamp_ms,
+            serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
+        )
+        .await;
+    } else {
+        return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+    }
+
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "status": "deployed",
+        "deployed": true,
+        "running": false,
+        "last_transition_ms": transition_ms
+    })))
+}
+
+async fn api_v1_start_pea(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let transition_ms = Simulation::now_ms();
+
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        {
+            let mut runtime = context.airlock_runtime.write().await;
+            if !runtime.deployed {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("PEA {pea_id} is not deployed"),
+                ));
+            }
+            runtime.running = true;
+            runtime.last_transition_ms = transition_ms;
+        }
+
+        let snapshot = {
+            let mut sim = context.sim.write().await;
+            sim.set_modes(MtpModesUpdateRequest {
+                operation_mode: Some(OperationMode::Auto),
+                command_en: Some(true),
+                command_en_reason: Some(String::new()),
+            });
+            sim.snapshot()
+        };
+        let _ = context.snapshots_tx.send(snapshot.clone());
+        let runtime_state = *context.airlock_runtime.read().await;
+        publish_pea_uns(&context, &snapshot, runtime_state).await;
+    } else if pea_id == DEFAULT_ECLSS_PEA_ID {
+        {
+            let mut runtime = context.eclss_runtime.write().await;
+            if !runtime.deployed {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("PEA {pea_id} is not deployed"),
+                ));
+            }
+            runtime.running = true;
+            runtime.last_transition_ms = transition_ms;
+        }
+    } else if pea_id == DEFAULT_SABATIER_PEA_ID {
+        {
+            let mut runtime = context.sabatier_runtime.write().await;
+            if !runtime.deployed {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("PEA {pea_id} is not deployed"),
+                ));
+            }
+            runtime.running = true;
+            runtime.last_transition_ms = transition_ms;
+        }
+    } else {
+        return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+    }
+
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "status": "running",
+        "deployed": true,
+        "running": true,
+        "last_transition_ms": transition_ms
+    })))
+}
+
+async fn api_v1_stop_pea(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let transition_ms = Simulation::now_ms();
+
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        {
+            let mut runtime = context.airlock_runtime.write().await;
+            if !runtime.deployed {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("PEA {pea_id} is not deployed"),
+                ));
+            }
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+
+        let snapshot = {
+            let mut sim = context.sim.write().await;
+            sim.set_modes(MtpModesUpdateRequest {
+                operation_mode: Some(OperationMode::Off),
+                command_en: Some(false),
+                command_en_reason: Some("PEA stopped by lifecycle".to_string()),
+            });
+            sim.snapshot()
+        };
+        let _ = context.snapshots_tx.send(snapshot.clone());
+        let runtime_state = *context.airlock_runtime.read().await;
+        publish_pea_uns(&context, &snapshot, runtime_state).await;
+    } else if pea_id == DEFAULT_ECLSS_PEA_ID {
+        {
+            let mut runtime = context.eclss_runtime.write().await;
+            if !runtime.deployed {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("PEA {pea_id} is not deployed"),
+                ));
+            }
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+    } else if pea_id == DEFAULT_SABATIER_PEA_ID {
+        {
+            let mut runtime = context.sabatier_runtime.write().await;
+            if !runtime.deployed {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("PEA {pea_id} is not deployed"),
+                ));
+            }
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+    } else {
+        return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+    }
+
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "status": "stopped",
+        "deployed": true,
+        "running": false,
+        "last_transition_ms": transition_ms
+    })))
+}
+
+async fn api_v1_undeploy_pea(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let transition_ms = Simulation::now_ms();
+
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        {
+            let mut runtime = context.airlock_runtime.write().await;
+            runtime.deployed = false;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+
+        let snapshot = {
+            let mut sim = context.sim.write().await;
+            sim.set_modes(MtpModesUpdateRequest {
+                operation_mode: Some(OperationMode::Off),
+                command_en: Some(false),
+                command_en_reason: Some("PEA undeployed".to_string()),
+            });
+            sim.snapshot()
+        };
+        let _ = context.snapshots_tx.send(snapshot.clone());
+        let runtime_state = *context.airlock_runtime.read().await;
+        publish_pea_uns(&context, &snapshot, runtime_state).await;
+    } else if pea_id == DEFAULT_ECLSS_PEA_ID {
+        let mut runtime = context.eclss_runtime.write().await;
+        runtime.deployed = false;
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_SABATIER_PEA_ID {
+        let mut runtime = context.sabatier_runtime.write().await;
+        runtime.deployed = false;
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
+    } else {
+        return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+    }
+
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "status": "undeployed",
+        "deployed": false,
+        "running": false,
+        "last_transition_ms": transition_ms
+    })))
+}
+
+async fn api_v1_get_pea_mtp_tree(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        let (snapshot, tree) = {
+            let sim = context.sim.read().await;
+            (sim.snapshot(), sim.mtp_tree())
+        };
+        return Ok(axum::Json(json!({
+            "pea_id": snapshot.mtp_runtime.pea_information_label.tag_name,
+            "namespace": tree.namespace,
+            "root_path": tree.root_path,
+            "nodes": tree.nodes
+        })));
+    }
+    if pea_id == DEFAULT_ECLSS_PEA_ID {
+        let nodes = context.eclss_sim.read().await.mtp_nodes();
+        return Ok(axum::Json(json!({
+            "pea_id": DEFAULT_ECLSS_PEA_ID,
+            "namespace": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_ECLSS_PEA_ID),
+            "root_path": "Objects/Underhill/ECLSSPEA",
+            "nodes": nodes
+        })));
+    }
+    if pea_id == DEFAULT_SABATIER_PEA_ID {
+        let nodes = context.sabatier_sim.read().await.mtp_nodes();
+        return Ok(axum::Json(json!({
+            "pea_id": DEFAULT_SABATIER_PEA_ID,
+            "namespace": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_SABATIER_PEA_ID),
+            "root_path": "Objects/Underhill/SabatierPEA",
+            "nodes": nodes
+        })));
+    }
+    Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")))
+}
+
+async fn api_v1_get_subsystem_operator_state(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    if pea_id == DEFAULT_ECLSS_PEA_ID {
+        let runtime_state = *context.eclss_runtime.read().await;
+        let operator_state = context.eclss_operator_state.read().await.clone();
+        let service_state = subsystem_service_state(runtime_state, &operator_state);
+        return Ok(axum::Json(json!({
+            "pea_id": pea_id,
+            "service_tag": ECLSS_SERVICE_TAG,
+            "operator_state": operator_state,
+            "derived_service_state": service_state,
+            "derived_state_code": subsystem_packml_state_code(service_state),
+            "runtime": runtime_state
+        })));
+    }
+    if pea_id == DEFAULT_SABATIER_PEA_ID {
+        let runtime_state = *context.sabatier_runtime.read().await;
+        let operator_state = context.sabatier_operator_state.read().await.clone();
+        let service_state = subsystem_service_state(runtime_state, &operator_state);
+        return Ok(axum::Json(json!({
+            "pea_id": pea_id,
+            "service_tag": SABATIER_SERVICE_TAG,
+            "operator_state": operator_state,
+            "derived_service_state": service_state,
+            "derived_state_code": subsystem_packml_state_code(service_state),
+            "runtime": runtime_state
+        })));
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("Subsystem operator-state not available for PEA {pea_id}"),
+    ))
+}
+
+async fn api_v1_set_subsystem_operator_state(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<SubsystemOperatorStateUpdateRequest>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    if pea_id == DEFAULT_ECLSS_PEA_ID {
+        let mut operator_state = context.eclss_operator_state.write().await;
+        if let Some(value) = payload.operation_mode {
+            operator_state.operation_mode = value;
+        }
+        if let Some(value) = payload.source_mode {
+            operator_state.source_mode = value;
+        }
+        if let Some(value) = payload.command_en {
+            operator_state.command_en = value;
+        }
+        if let Some(value) = payload.command_en_reason {
+            operator_state.command_en_reason = value;
+        }
+        if let Some(value) = payload.operator_control_enabled {
+            operator_state.operator_control_enabled = value;
+        }
+        if let Some(value) = payload.remote_control_enabled {
+            operator_state.remote_control_enabled = value;
+        }
+        if !operator_state.operator_control_enabled && !operator_state.remote_control_enabled {
+            operator_state.source_mode = CommandSourceEnum::SystemAuto;
+        } else if !operator_state.operator_control_enabled
+            && operator_state.source_mode == CommandSourceEnum::OperatorUi
+        {
+            operator_state.source_mode = CommandSourceEnum::RemoteOpcua;
+        } else if !operator_state.remote_control_enabled
+            && operator_state.source_mode == CommandSourceEnum::RemoteOpcua
+        {
+            operator_state.source_mode = CommandSourceEnum::OperatorUi;
+        }
+    } else if pea_id == DEFAULT_SABATIER_PEA_ID {
+        let mut operator_state = context.sabatier_operator_state.write().await;
+        if let Some(value) = payload.operation_mode {
+            operator_state.operation_mode = value;
+        }
+        if let Some(value) = payload.source_mode {
+            operator_state.source_mode = value;
+        }
+        if let Some(value) = payload.command_en {
+            operator_state.command_en = value;
+        }
+        if let Some(value) = payload.command_en_reason {
+            operator_state.command_en_reason = value;
+        }
+        if let Some(value) = payload.operator_control_enabled {
+            operator_state.operator_control_enabled = value;
+        }
+        if let Some(value) = payload.remote_control_enabled {
+            operator_state.remote_control_enabled = value;
+        }
+        if !operator_state.operator_control_enabled && !operator_state.remote_control_enabled {
+            operator_state.source_mode = CommandSourceEnum::SystemAuto;
+        } else if !operator_state.operator_control_enabled
+            && operator_state.source_mode == CommandSourceEnum::OperatorUi
+        {
+            operator_state.source_mode = CommandSourceEnum::RemoteOpcua;
+        } else if !operator_state.remote_control_enabled
+            && operator_state.source_mode == CommandSourceEnum::RemoteOpcua
+        {
+            operator_state.source_mode = CommandSourceEnum::OperatorUi;
+        }
+    } else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("Subsystem operator-state not available for PEA {pea_id}"),
+        ));
+    }
+
+    let (service_tag, operator_state, runtime_state, process_values, timestamp_ms) =
+        if pea_id == DEFAULT_ECLSS_PEA_ID {
+            let operator_state = context.eclss_operator_state.read().await.clone();
+            let mut runtime = context.eclss_runtime.write().await;
+            if !operator_state.command_en
+                || matches!(
+                    operator_state.operation_mode,
+                    OperationMode::Off | OperationMode::Maint
+                )
+            {
+                runtime.running = false;
+                runtime.last_transition_ms = Simulation::now_ms();
+            }
+            let runtime_state = *runtime;
+            drop(runtime);
+            let snapshot = context.eclss_sim.read().await.snapshot();
+            let process_values = serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({}));
+            (
+                ECLSS_SERVICE_TAG,
+                operator_state,
+                runtime_state,
+                process_values,
+                snapshot.timestamp_ms,
+            )
+        } else {
+            let operator_state = context.sabatier_operator_state.read().await.clone();
+            let mut runtime = context.sabatier_runtime.write().await;
+            if !operator_state.command_en
+                || matches!(
+                    operator_state.operation_mode,
+                    OperationMode::Off | OperationMode::Maint
+                )
+            {
+                runtime.running = false;
+                runtime.last_transition_ms = Simulation::now_ms();
+            }
+            let runtime_state = *runtime;
+            drop(runtime);
+            let snapshot = context.sabatier_sim.read().await.snapshot();
+            let process_values = serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({}));
+            (
+                SABATIER_SERVICE_TAG,
+                operator_state,
+                runtime_state,
+                process_values,
+                snapshot.timestamp_ms,
+            )
+        };
+
+    let service_state = subsystem_service_state(runtime_state, &operator_state);
+    publish_subsystem_uns(
+        &context,
+        &pea_id,
+        service_tag,
+        service_state,
+        runtime_state,
+        timestamp_ms,
+        process_values,
+    )
+    .await;
+
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "service_tag": service_tag,
+        "operator_state": operator_state,
+        "derived_service_state": service_state,
+        "derived_state_code": subsystem_packml_state_code(service_state),
+        "runtime": runtime_state
+    })))
+}
+
+async fn api_v1_i3x_list_peas(State(context): State<AppContext>) -> impl IntoResponse {
+    let (snapshot, runtime_state) = {
+        let sim = context.sim.read().await;
+        let runtime_state = *context.airlock_runtime.read().await;
+        (sim.snapshot(), runtime_state)
+    };
+    let eclss_runtime = *context.eclss_runtime.read().await;
+    let eclss_operator_state = context.eclss_operator_state.read().await.clone();
+    let eclss_snapshot = context.eclss_sim.read().await.snapshot();
+    let sabatier_runtime = *context.sabatier_runtime.read().await;
+    let sabatier_operator_state = context.sabatier_operator_state.read().await.clone();
+    let sabatier_snapshot = context.sabatier_sim.read().await.snapshot();
+    let item = build_i3x_pea_descriptor(&snapshot, runtime_state, &context.node_id);
+    let eclss_item = build_i3x_subsystem_descriptor(
+        &context,
+        DEFAULT_ECLSS_PEA_ID,
+        ECLSS_SERVICE_TAG,
+        eclss_runtime,
+        &eclss_operator_state,
+        &eclss_snapshot,
+    );
+    let sabatier_item = build_i3x_subsystem_descriptor(
+        &context,
+        DEFAULT_SABATIER_PEA_ID,
+        SABATIER_SERVICE_TAG,
+        sabatier_runtime,
+        &sabatier_operator_state,
+        &sabatier_snapshot,
+    );
+    axum::Json(json!({
+        "adapter": {
+            "name": "underhill-i3x-adapter",
+            "version": "0.1.0",
+        },
+        "items": [item, eclss_item, sabatier_item],
+        "count": 3
+    }))
+}
+
+async fn api_v1_i3x_get_pea(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+        let (snapshot, runtime_state) = {
+            let sim = context.sim.read().await;
+            let runtime_state = *context.airlock_runtime.read().await;
+            (sim.snapshot(), runtime_state)
+        };
+        return Ok(axum::Json(build_i3x_pea_descriptor(
+            &snapshot,
+            runtime_state,
+            &context.node_id,
+        )));
+    }
+    if pea_id == DEFAULT_ECLSS_PEA_ID {
+        let runtime_state = *context.eclss_runtime.read().await;
+        let operator_state = context.eclss_operator_state.read().await.clone();
+        let snapshot = context.eclss_sim.read().await.snapshot();
+        return Ok(axum::Json(build_i3x_subsystem_descriptor(
+            &context,
+            DEFAULT_ECLSS_PEA_ID,
+            ECLSS_SERVICE_TAG,
+            runtime_state,
+            &operator_state,
+            &snapshot,
+        )));
+    }
+    if pea_id == DEFAULT_SABATIER_PEA_ID {
+        let runtime_state = *context.sabatier_runtime.read().await;
+        let operator_state = context.sabatier_operator_state.read().await.clone();
+        let snapshot = context.sabatier_sim.read().await.snapshot();
+        return Ok(axum::Json(build_i3x_subsystem_descriptor(
+            &context,
+            DEFAULT_SABATIER_PEA_ID,
+            SABATIER_SERVICE_TAG,
+            runtime_state,
+            &operator_state,
+            &snapshot,
+        )));
+    }
+    Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")))
+}
+
+async fn api_v1_i3x_capability_schema() -> impl IntoResponse {
+    axum::Json(json!({
+        "adapter": {
+            "name": "underhill-i3x-adapter",
+            "version": "0.1.0",
+        },
+        "resource_type": "PEA",
+        "state_model": {
+            "name": "MTP_S88_MINIMUM",
+            "states": [
+                "Idle", "Starting", "Execute", "Completing", "Completed",
+                "Pausing", "Paused", "Resuming", "Holding", "Held",
+                "Unholding", "Stopping", "Stopped", "Aborting", "Aborted", "Resetting"
+            ],
+            "state_code_map": {
+                "Idle": 16,
+                "Starting": 8,
+                "Execute": 64,
+                "Completing": 65536,
+                "Completed": 131072,
+                "Pausing": 8192,
+                "Paused": 32,
+                "Resuming": 16384,
+                "Holding": 1024,
+                "Held": 2048,
+                "Unholding": 4096,
+                "Stopping": 128,
+                "Stopped": 4,
+                "Aborting": 256,
+                "Aborted": 512,
+                "Resetting": 32768
+            }
+        },
+        "commandability": {
+            "allowed_commands": [
+                "Reset", "Start", "Stop", "Hold", "Unhold",
+                "Pause", "Resume", "Abort", "Restart", "Complete"
+            ],
+            "dispatch_contract": "POST /api/v1/pea/{id}/services/{service_tag}/command"
+        }
+    }))
+}
+
+async fn api_v1_i3x_namespaces() -> impl IntoResponse {
+    axum::Json(json!([
+        {
+            "uri": "https://underhill.murph/ns/pea",
+            "displayName": "Underhill PEA Equipment"
+        },
+        {
+            "uri": "https://www.i3x.org/relationships",
+            "displayName": "I3X Standard Relationships"
+        }
+    ]))
+}
+
+fn i3x_object_types() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "elementId": "BaseEquipment",
+            "displayName": "Base Equipment Type",
+            "namespaceUri": "https://underhill.murph/ns/pea",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "node_id": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "elementId": "PEAType",
+            "displayName": "Process Equipment Asset",
+            "namespaceUri": "https://underhill.murph/ns/pea",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "pea_id": { "type": "string" },
+                    "pea_type": { "type": "string" },
+                    "services": { "type": "array" },
+                    "opcua_endpoint": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "elementId": "ServiceType",
+            "displayName": "PEA Service",
+            "namespaceUri": "https://underhill.murph/ns/pea",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "service_tag": { "type": "string" },
+                    "state": { "type": "string" }
+                }
+            }
+        }),
+    ]
+}
+
+async fn api_v1_i3x_objecttypes(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let namespace_filter = query.get("namespaceUri").map(String::as_str);
+    let object_types = i3x_object_types();
+    let filtered = if let Some(namespace_uri) = namespace_filter {
+        object_types
+            .into_iter()
+            .filter(|obj| {
+                obj.get("namespaceUri")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|ns| ns == namespace_uri)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        object_types
+    };
+    axum::Json(serde_json::Value::Array(filtered))
+}
+
+async fn api_v1_i3x_objecttype_by_id(
+    Path(element_id): Path<String>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    for object_type in i3x_object_types() {
+        if object_type
+            .get("elementId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id == element_id)
+        {
+            return Ok(axum::Json(object_type));
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("Object type not found: {element_id}"),
+    ))
+}
+
+fn i3x_relationship_types() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "elementId": "HasParent",
+            "displayName": "Has Parent",
+            "namespaceUri": "https://www.i3x.org/relationships",
+            "reverseOf": "HasChildren"
+        }),
+        json!({
+            "elementId": "HasChildren",
+            "displayName": "Has Children",
+            "namespaceUri": "https://www.i3x.org/relationships",
+            "reverseOf": "HasParent"
+        }),
+    ]
+}
+
+async fn api_v1_i3x_relationshiptypes() -> impl IntoResponse {
+    axum::Json(serde_json::Value::Array(i3x_relationship_types()))
+}
+
+async fn api_v1_i3x_relationshiptype_by_id(
+    Path(element_id): Path<String>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    for rel in i3x_relationship_types() {
+        if rel
+            .get("elementId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id == element_id)
+        {
+            return Ok(axum::Json(rel));
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("Relationship type not found: {element_id}"),
+    ))
+}
+
+async fn api_v1_i3x_objects(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let namespace_filter = query.get("namespaceUri").map(String::as_str);
+    let objects = i3x_object_instances();
+    let filtered = if let Some(namespace_uri) = namespace_filter {
+        objects
+            .into_iter()
+            .filter(|obj| {
+                obj.get("namespaceUri")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|ns| ns == namespace_uri)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        objects
+    };
+    axum::Json(serde_json::Value::Array(filtered))
+}
+
+async fn api_v1_i3x_object_by_id(
+    Path(element_id): Path<String>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    for obj in i3x_object_instances() {
+        if obj
+            .get("elementId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id == element_id)
+        {
+            return Ok(axum::Json(obj));
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("Object not found: {element_id}"),
+    ))
+}
+
+async fn api_v1_i3x_related_objects(
+    Path(element_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let relation_filter = query.get("relationshiptype").map(String::as_str);
+    let mut related = Vec::new();
+    let objects = i3x_object_instances();
+
+    if element_id == "underhill-base" {
+        for pea_id in [
+            DEFAULT_AIRLOCK_PEA_ID,
+            DEFAULT_ECLSS_PEA_ID,
+            DEFAULT_SABATIER_PEA_ID,
+        ] {
+            if let Some(instance) = objects.iter().find(|obj| {
+                obj.get("elementId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| id == pea_id)
+            }) {
+                related.push(with_relationship(
+                    instance.clone(),
+                    "underhill-base",
+                    "HasChildren",
+                    "HasParent",
+                ));
+            }
+        }
+    } else if let Some(service_tag) = service_tag_for_pea_id(&element_id) {
+        if let Some(parent) = objects.iter().find(|obj| {
+            obj.get("elementId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| id == "underhill-base")
+        }) {
+            related.push(with_relationship(
+                parent.clone(),
+                &element_id,
+                "HasParent",
+                "HasChildren",
+            ));
+        }
+        let service_id = format!("{element_id}:{service_tag}");
+        if let Some(service_obj) = objects.iter().find(|obj| {
+            obj.get("elementId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| id == service_id)
+        }) {
+            related.push(with_relationship(
+                service_obj.clone(),
+                &element_id,
+                "HasChildren",
+                "HasParent",
+            ));
+        }
+    } else if let Some((pea_id, _service_tag)) = element_id.split_once(':') {
+        if let Some(parent_pea) = objects.iter().find(|obj| {
+            obj.get("elementId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| id == pea_id)
+        }) {
+            related.push(with_relationship(
+                parent_pea.clone(),
+                &element_id,
+                "HasParent",
+                "HasChildren",
+            ));
+        }
+    }
+
+    if let Some(filter) = relation_filter {
+        related.retain(|obj| {
+            obj.get("relationshipType")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|rel| rel == filter)
+        });
+    }
+    axum::Json(serde_json::Value::Array(related))
+}
+
+async fn api_v1_i3x_object_value(
+    Path(element_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let timestamp = Simulation::now_ms();
+    let (value, is_composition) = if element_id == "underhill-base" {
+        (
+            json!({
+                "name": "Underhill Base",
+                "node_id": context.node_id,
+                "pea_count": 3
+            }),
+            true,
+        )
+    } else if element_id == DEFAULT_AIRLOCK_PEA_ID {
+        let (snapshot, runtime_state) = {
+            let sim = context.sim.read().await;
+            let runtime_state = *context.airlock_runtime.read().await;
+            (sim.snapshot(), runtime_state)
+        };
+        (build_airlock_pea_descriptor(&snapshot, runtime_state), true)
+    } else if element_id == DEFAULT_ECLSS_PEA_ID {
+        let runtime_state = *context.eclss_runtime.read().await;
+        let operator_state = context.eclss_operator_state.read().await.clone();
+        let snapshot = context.eclss_sim.read().await.snapshot();
+        (
+            build_eclss_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+                DEFAULT_ECLSS_PEA_ID,
+                ECLSS_SERVICE_TAG,
+            ),
+            true,
+        )
+    } else if element_id == DEFAULT_SABATIER_PEA_ID {
+        let runtime_state = *context.sabatier_runtime.read().await;
+        let operator_state = context.sabatier_operator_state.read().await.clone();
+        let snapshot = context.sabatier_sim.read().await.snapshot();
+        (
+            build_sabatier_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+                DEFAULT_SABATIER_PEA_ID,
+                SABATIER_SERVICE_TAG,
+            ),
+            true,
+        )
+    } else if let Some((pea_id, service_tag)) = element_id.split_once(':') {
+        let state = if pea_id == DEFAULT_AIRLOCK_PEA_ID {
+            let snapshot = context.sim.read().await.snapshot();
+            format!("{:?}", snapshot.mtp_state_machine.current_state)
+        } else if pea_id == DEFAULT_ECLSS_PEA_ID {
+            let runtime = *context.eclss_runtime.read().await;
+            let operator_state = context.eclss_operator_state.read().await.clone();
+            subsystem_service_state(runtime, &operator_state).to_string()
+        } else if pea_id == DEFAULT_SABATIER_PEA_ID {
+            let runtime = *context.sabatier_runtime.read().await;
+            let operator_state = context.sabatier_operator_state.read().await.clone();
+            subsystem_service_state(runtime, &operator_state).to_string()
+        } else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Object not found: {element_id}"),
+            ));
+        };
+        (
+            json!({
+                "pea_id": pea_id,
+                "service_tag": service_tag,
+                "state": state
+            }),
+            false,
+        )
+    } else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("Object not found: {element_id}"),
+        ));
+    };
+
+    Ok(axum::Json(json!({
+        "elementId": element_id,
+        "isComposition": is_composition,
+        "value": {
+            "value": value,
+            "quality": "Good",
+            "timestamp": timestamp.to_string()
+        }
+    })))
+}
+
+async fn api_v1_i3x_object_history(
+    Path(element_id): Path<String>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let current = api_v1_i3x_object_value(Path(element_id.clone()), State(context)).await?;
+    let vqt = current.0.get("value").cloned().unwrap_or_else(
+        || json!({"value": {}, "quality": "Bad", "timestamp": Simulation::now_ms().to_string()}),
+    );
+    Ok(axum::Json(json!({
+        "elementId": element_id,
+        "isComposition": current.0.get("isComposition").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        "value": [vqt]
+    })))
+}
+
+async fn api_v1_i3x_put_object_value(
+    Path(element_id): Path<String>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    Err((
+        StatusCode::NOT_IMPLEMENTED,
+        format!("I3X write path not implemented for {element_id}"),
+    ))
+}
+
+fn i3x_object_instances() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "elementId": "underhill-base",
+            "displayName": "Underhill Base",
+            "typeId": "BaseEquipment",
+            "parentId": serde_json::Value::Null,
+            "isComposition": true,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+        json!({
+            "elementId": DEFAULT_AIRLOCK_PEA_ID,
+            "displayName": "Underhill Airlock",
+            "typeId": "PEAType",
+            "parentId": "underhill-base",
+            "isComposition": true,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+        json!({
+            "elementId": format!("{DEFAULT_AIRLOCK_PEA_ID}:{AIRLOCK_SERVICE_TAG}"),
+            "displayName": AIRLOCK_SERVICE_TAG,
+            "typeId": "ServiceType",
+            "parentId": DEFAULT_AIRLOCK_PEA_ID,
+            "isComposition": false,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+        json!({
+            "elementId": DEFAULT_ECLSS_PEA_ID,
+            "displayName": "Underhill ECLSS",
+            "typeId": "PEAType",
+            "parentId": "underhill-base",
+            "isComposition": true,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+        json!({
+            "elementId": format!("{DEFAULT_ECLSS_PEA_ID}:{ECLSS_SERVICE_TAG}"),
+            "displayName": ECLSS_SERVICE_TAG,
+            "typeId": "ServiceType",
+            "parentId": DEFAULT_ECLSS_PEA_ID,
+            "isComposition": false,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+        json!({
+            "elementId": DEFAULT_SABATIER_PEA_ID,
+            "displayName": "Underhill Sabatier",
+            "typeId": "PEAType",
+            "parentId": "underhill-base",
+            "isComposition": true,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+        json!({
+            "elementId": format!("{DEFAULT_SABATIER_PEA_ID}:{SABATIER_SERVICE_TAG}"),
+            "displayName": SABATIER_SERVICE_TAG,
+            "typeId": "ServiceType",
+            "parentId": DEFAULT_SABATIER_PEA_ID,
+            "isComposition": false,
+            "namespaceUri": "https://underhill.murph/ns/pea"
+        }),
+    ]
+}
+
+fn service_tag_for_pea_id(pea_id: &str) -> Option<&'static str> {
+    match pea_id {
+        DEFAULT_AIRLOCK_PEA_ID => Some(AIRLOCK_SERVICE_TAG),
+        DEFAULT_ECLSS_PEA_ID => Some(ECLSS_SERVICE_TAG),
+        DEFAULT_SABATIER_PEA_ID => Some(SABATIER_SERVICE_TAG),
+        _ => None,
+    }
+}
+
+fn with_relationship(
+    mut object: serde_json::Value,
+    subject: &str,
+    relationship_type: &str,
+    relationship_type_inverse: &str,
+) -> serde_json::Value {
+    if let Some(map) = object.as_object_mut() {
+        map.insert("subject".to_string(), json!(subject));
+        map.insert("relationshipType".to_string(), json!(relationship_type));
+        map.insert(
+            "relationshipTypeInverse".to_string(),
+            json!(relationship_type_inverse),
+        );
+    }
+    object
+}
+
+async fn api_v1_pea_service_command(
+    Path((pea_id, service_tag)): Path<(String, String)>,
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<PeaServiceCommandRequest>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    if pea_id != DEFAULT_AIRLOCK_PEA_ID {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            format!(
+                "Service command channel for {pea_id}/{service_tag} is not implemented yet; lifecycle simulation is available"
+            ),
+        ));
+    }
+
+    let runtime_state = *context.airlock_runtime.read().await;
+    if !runtime_state.deployed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("PEA {pea_id} is not deployed"),
+        ));
+    }
+    if !runtime_state.running {
+        return Err((StatusCode::CONFLICT, format!("PEA {pea_id} is not running")));
+    }
+
+    let source_str = payload
+        .source
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| "pol".to_string());
+
+    let (response, snapshot) = {
+        let mut sim = context.sim.write().await;
+        let expected_id = sim.snapshot().mtp_runtime.pea_information_label.tag_name;
+        let expected_service = sim.snapshot().mtp_runtime.service_information.service_name;
+
+        if pea_id != expected_id {
+            return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+        }
+        if !service_tag.eq_ignore_ascii_case(&expected_service) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Service not found for PEA {pea_id}: {service_tag}"),
+            ));
+        }
+
+        let source = parse_command_source(&source_str).ok_or((
+            StatusCode::BAD_REQUEST,
+            "Invalid source. Use POL, operator, or remote".to_string(),
+        ))?;
+
+        let req = CommandRequestFields {
+            sequence_id: payload.sequence_id,
+            command: payload.command,
+            param1: payload.param1,
+            param2: payload.param2,
+            execute: payload.execute,
+        };
+        let response = sim.write_request(source, req);
+        let snapshot = sim.snapshot();
+        (response, snapshot)
+    };
+
+    let _ = context.snapshots_tx.send(snapshot.clone());
+    let runtime_state = *context.airlock_runtime.read().await;
+    publish_pea_uns(&context, &snapshot, runtime_state).await;
+    Ok(axum::Json(json!({
+        "pea_id": pea_id,
+        "service_tag": service_tag,
+        "response": response,
+        "active_command": snapshot.active_command,
+        "mtp_state_machine": snapshot.mtp_state_machine
+    })))
+}
+
+async fn api_set_security_profile(
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<SecurityProfileRequest>,
+) -> impl IntoResponse {
+    let Some(normalized) = Simulation::normalize_security_profile(&payload.profile) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(
+                "Unsupported security profile. Use NONE, BASIC256SHA256, or BOTH".to_string(),
+            ),
+        );
+    };
+
+    if let Err(err) = context
+        .opcua_control
+        .set_security_profile(normalized.clone())
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(format!("Failed to apply security profile: {err}")),
+        );
+    }
+
+    let snapshot = {
+        let mut sim = context.sim.write().await;
+        sim.set_security_profile(&normalized);
+        sim.snapshot()
+    };
+    let _ = context.snapshots_tx.send(snapshot.clone());
+    (
+        StatusCode::OK,
+        axum::Json(snapshot.diagnostics.active_security_mode),
+    )
+}
+
+async fn api_set_permissions(
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<PermissionsUpdateRequest>,
+) -> impl IntoResponse {
+    let snapshot = {
+        let mut sim = context.sim.write().await;
+        sim.set_permissions(payload);
+        sim.snapshot()
+    };
+    let _ = context.snapshots_tx.send(snapshot.clone());
+    (StatusCode::OK, axum::Json(snapshot.permissions))
+}
+
+async fn api_set_modes(
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<MtpModesUpdateRequest>,
+) -> impl IntoResponse {
+    let snapshot = {
+        let mut sim = context.sim.write().await;
+        sim.set_modes(payload);
+        sim.snapshot()
+    };
+    let _ = context.snapshots_tx.send(snapshot.clone());
+    (
+        StatusCode::OK,
+        axum::Json(json!({
+            "mtp_modes": snapshot.mtp_modes,
+            "mtp_state_machine": snapshot.mtp_state_machine
+        })),
+    )
+}
+
+async fn api_set_leak_rate(
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<LeakRateUpdateRequest>,
+) -> impl IntoResponse {
+    let snapshot = {
+        let mut sim = context.sim.write().await;
+        sim.set_leak_rate(payload);
+        sim.snapshot()
+    };
+    let _ = context.snapshots_tx.send(snapshot.clone());
+    (StatusCode::OK, axum::Json(snapshot.alarms))
+}
+
+async fn api_write_command(
+    Path(source): Path<String>,
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<CommandRequestFields>,
+) -> Result<axum::Json<CommandResponseFields>, (StatusCode, String)> {
+    let source = parse_command_source(&source)
+        .ok_or((StatusCode::BAD_REQUEST, "invalid source path".to_string()))?;
+
+    let (response, snapshot) = {
+        let mut sim = context.sim.write().await;
+        let response = sim.write_request(source, payload);
+        let snapshot = sim.snapshot();
+        (response, snapshot)
+    };
+
+    let _ = context.snapshots_tx.send(snapshot);
+    Ok(axum::Json(response))
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(context): State<AppContext>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| ws_client(socket, addr, context))
+}
+
+async fn ws_client(socket: axum::extract::ws::WebSocket, addr: SocketAddr, context: AppContext) {
+    let session_id = context.next_client_id.fetch_add(1, Ordering::Relaxed);
+
+    {
+        let mut sim = context.sim.write().await;
+        sim.register_client(
+            session_id,
+            format!("ws-session-{session_id}"),
+            addr.to_string(),
+        );
+        let _ = context.snapshots_tx.send(sim.snapshot());
+    }
+
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = context.systems_snapshots_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(message)) => {
+                        if matches!(message, Message::Close(_)) {
+                            break;
+                        }
+                        let mut sim = context.sim.write().await;
+                        sim.touch_client(session_id);
+                    }
+                    Some(Err(_)) | None => break,
+                }
+            }
+            outgoing = rx.recv() => {
+                match outgoing {
+                    Ok(systems_snapshot) => {
+                        let text = match serde_json::to_string(&systems_snapshot) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+                        if sender.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+
+    {
+        let mut sim = context.sim.write().await;
+        sim.unregister_client(session_id);
+        let _ = context.snapshots_tx.send(sim.snapshot());
+    }
+}
+
+fn parse_command_source(input: &str) -> Option<CommandSourceEnum> {
+    match input.to_ascii_lowercase().as_str() {
+        "operator" | "operator_ui" | "pol" => Some(CommandSourceEnum::OperatorUi),
+        "remote" | "remote_opcua" => Some(CommandSourceEnum::RemoteOpcua),
+        _ => None,
+    }
+}
+
+fn build_airlock_pea_descriptor(
+    snapshot: &Snapshot,
+    runtime_state: PeaRuntimeState,
+) -> serde_json::Value {
+    let service_tag = snapshot
+        .mtp_runtime
+        .service_information
+        .service_name
+        .clone();
+    let state = format!("{:?}", snapshot.mtp_state_machine.current_state).to_lowercase();
+
+    json!({
+        "pea_id": snapshot.mtp_runtime.pea_information_label.tag_name,
+        "pea_type": "AIRLOCK",
+        "name": snapshot.mtp_runtime.pea_information_label.module_name,
+        "node_id": std::env::var("MURPH_NODE_ID").unwrap_or_else(|_| DEFAULT_NODE_ID.to_string()),
+        "namespace_uri": "urn:mars-airlock:mtp",
+        "root_path": "Objects/MarsBase/AirlockPEA",
+        "opcua_endpoint": snapshot.diagnostics.endpoint_url,
+        "health_state": snapshot.mtp_runtime.pea_information_label.health_state,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "active_command_running": snapshot.active_command.state == model::CommandStatusEnum::Running,
+        "services": [{
+            "tag": service_tag,
+            "state": state,
+            "transition_active": snapshot.mtp_state_machine.transition_active,
+            "active_procedure": snapshot.mtp_runtime.service_information.active_procedure,
+            "command_en": snapshot.mtp_modes.command_en
+        }],
+        "updated_at_ms": snapshot.timestamp_ms,
+        "last_transition_ms": runtime_state.last_transition_ms
+    })
+}
+
+fn build_eclss_pea_descriptor(
+    context: &AppContext,
+    snapshot: &EclssSnapshot,
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+    pea_id: &str,
+    service_tag: &str,
+) -> serde_json::Value {
+    let service_state = subsystem_service_state(runtime_state, operator_state).to_lowercase();
+    let health_state = if snapshot.alarm_high_co2 || snapshot.alarm_low_o2 {
+        "WARN"
+    } else {
+        "OK"
+    };
+    json!({
+        "pea_id": pea_id,
+        "pea_type": "ECLSS",
+        "name": "Underhill ECLSS",
+        "node_id": context.node_id.clone(),
+        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), pea_id),
+        "root_path": "Objects/Underhill/ECLSSPEA",
+        "opcua_endpoint": context.pea_opcua_endpoints.get(pea_id).cloned().unwrap_or_default(),
+        "health_state": health_state,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "active_command_running": false,
+        "services": [{
+            "tag": service_tag,
+            "state": service_state,
+            "transition_active": false,
+            "active_procedure": if runtime_state.running { "Proc_LifeSupportNominal" } else { "None" },
+            "command_en": operator_state.command_en
+        }],
+        "operator_state": operator_state,
+        "process_values": {
+            "cabin_pressure_kpa": snapshot.cabin_pressure_kpa,
+            "o2_percent": snapshot.o2_percent,
+            "co2_ppm": snapshot.co2_ppm,
+            "humidity_pct": snapshot.humidity_pct,
+            "water_recovery_pct": snapshot.water_recovery_pct,
+            "co2_capture_kgph": snapshot.co2_capture_kgph,
+            "o2_generation_kgph": snapshot.o2_generation_kgph,
+            "power_kw": snapshot.power_kw
+        },
+        "updated_at_ms": snapshot.timestamp_ms,
+        "last_transition_ms": runtime_state.last_transition_ms
+    })
+}
+
+fn build_sabatier_pea_descriptor(
+    context: &AppContext,
+    snapshot: &SabatierSnapshot,
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+    pea_id: &str,
+    service_tag: &str,
+) -> serde_json::Value {
+    let service_state = subsystem_service_state(runtime_state, operator_state).to_lowercase();
+    let health_state = if snapshot.alarm_reactor_temp {
+        "WARN"
+    } else {
+        "OK"
+    };
+    json!({
+        "pea_id": pea_id,
+        "pea_type": "ISRU_SABATIER",
+        "name": "Underhill Sabatier",
+        "node_id": context.node_id.clone(),
+        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), pea_id),
+        "root_path": "Objects/Underhill/SabatierPEA",
+        "opcua_endpoint": context.pea_opcua_endpoints.get(pea_id).cloned().unwrap_or_default(),
+        "health_state": health_state,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "active_command_running": false,
+        "services": [{
+            "tag": service_tag,
+            "state": service_state,
+            "transition_active": false,
+            "active_procedure": if runtime_state.running { "Proc_SabatierNominal" } else { "None" },
+            "command_en": operator_state.command_en
+        }],
+        "operator_state": operator_state,
+        "process_values": {
+            "reactor_temp_c": snapshot.reactor_temp_c,
+            "reactor_pressure_bar": snapshot.reactor_pressure_bar,
+            "co2_feed_kgph": snapshot.co2_feed_kgph,
+            "h2_feed_kgph": snapshot.h2_feed_kgph,
+            "conversion_efficiency_pct": snapshot.conversion_efficiency_pct,
+            "methane_production_kgph": snapshot.methane_production_kgph,
+            "water_production_kgph": snapshot.water_production_kgph,
+            "catalyst_health_pct": snapshot.catalyst_health_pct,
+            "power_kw": snapshot.power_kw
+        },
+        "updated_at_ms": snapshot.timestamp_ms,
+        "last_transition_ms": runtime_state.last_transition_ms
+    })
+}
+
+fn build_i3x_pea_descriptor(
+    snapshot: &Snapshot,
+    runtime_state: PeaRuntimeState,
+    node_id: &str,
+) -> serde_json::Value {
+    let service_tag = snapshot
+        .mtp_runtime
+        .service_information
+        .service_name
+        .clone();
+    let service_state = format!("{:?}", snapshot.mtp_state_machine.current_state);
+    let pea_id = snapshot.mtp_runtime.pea_information_label.tag_name.clone();
+
+    json!({
+        "resource_id": format!("pea:{pea_id}"),
+        "resource_type": "PEA",
+        "pea_id": pea_id,
+        "pea_type": "AIRLOCK",
+        "name": snapshot.mtp_runtime.pea_information_label.module_name,
+        "node_id": node_id,
+        "namespace_uri": "urn:mars-airlock:mtp",
+        "uns_namespace": format!("murph/habitat/nodes/{node_id}/pea/{}", snapshot.mtp_runtime.pea_information_label.tag_name),
+        "opcua_endpoint": snapshot.diagnostics.endpoint_url,
+        "health_state": snapshot.mtp_runtime.pea_information_label.health_state,
+        "runtime": {
+            "deployed": runtime_state.deployed,
+            "running": runtime_state.running,
+            "last_transition_ms": runtime_state.last_transition_ms,
+        },
+        "services": [{
+            "tag": service_tag,
+            "state": service_state,
+            "state_code": packml_state_code(snapshot.mtp_state_machine.current_state),
+            "active_procedure": snapshot.mtp_runtime.service_information.active_procedure,
+            "transition_active": snapshot.mtp_state_machine.transition_active,
+            "commandability": {
+                "command_en": snapshot.mtp_modes.command_en,
+                "dispatch_contract": "POST /api/v1/pea/{id}/services/{service_tag}/command",
+                "allowed_commands": [
+                    "Reset", "Start", "Stop", "Hold", "Unhold",
+                    "Pause", "Resume", "Abort", "Restart", "Complete"
+                ],
+            }
+        }],
+        "updated_at_ms": snapshot.timestamp_ms,
+    })
+}
+
+fn build_i3x_subsystem_descriptor<T: Serialize>(
+    context: &AppContext,
+    pea_id: &str,
+    service_tag: &str,
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+    snapshot: &T,
+) -> serde_json::Value {
+    let process_values = serde_json::to_value(snapshot).unwrap_or_else(|_| json!({}));
+    let service_state = subsystem_service_state(runtime_state, operator_state);
+    let state_code = subsystem_packml_state_code(service_state);
+    let health_state = health_from_process_values(&process_values);
+    let timestamp_ms = process_values
+        .get("timestamp_ms")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(Simulation::now_ms);
+    let pea_type = if pea_id == DEFAULT_ECLSS_PEA_ID {
+        "ECLSS"
+    } else {
+        "ISRU_SABATIER"
+    };
+    let uns_namespace = format!(
+        "murph/habitat/nodes/{}/pea/{pea_id}",
+        context.node_id.as_str()
+    );
+
+    json!({
+        "resource_id": format!("pea:{pea_id}"),
+        "resource_type": "PEA",
+        "pea_id": pea_id,
+        "pea_type": pea_type,
+        "name": if pea_id == DEFAULT_ECLSS_PEA_ID { "Underhill ECLSS" } else { "Underhill Sabatier" },
+        "node_id": context.node_id.clone(),
+        "namespace_uri": format!("urn:underhill:{}:pea:{pea_id}", context.node_id.as_str()),
+        "uns_namespace": uns_namespace,
+        "opcua_endpoint": context.pea_opcua_endpoints.get(pea_id).cloned().unwrap_or_default(),
+        "health_state": health_state,
+        "runtime": {
+            "deployed": runtime_state.deployed,
+            "running": runtime_state.running,
+            "last_transition_ms": runtime_state.last_transition_ms,
+        },
+        "services": [{
+            "tag": service_tag,
+            "state": service_state,
+            "state_code": state_code,
+            "active_procedure": if runtime_state.running { "Proc_Nominal" } else { "None" },
+            "transition_active": false,
+            "commandability": {
+                "command_en": operator_state.command_en,
+                "dispatch_contract": "POST /api/v1/pea/{id}/services/{service_tag}/command",
+                "allowed_commands": [],
+            }
+        }],
+        "operator_state": operator_state,
+        "process_values": process_values,
+        "updated_at_ms": timestamp_ms,
+    })
+}
+
+fn subsystem_service_state(
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+) -> &'static str {
+    if !runtime_state.deployed {
+        "Stopped"
+    } else if matches!(
+        operator_state.operation_mode,
+        OperationMode::Off | OperationMode::Maint
+    ) {
+        "Stopped"
+    } else if !operator_state.command_en {
+        "Held"
+    } else if runtime_state.running {
+        "Execute"
+    } else {
+        "Idle"
+    }
+}
+
+fn subsystem_packml_state_code(state: &str) -> u32 {
+    match state {
+        "Execute" => 64,
+        "Stopped" => 4,
+        "Held" => 2048,
+        _ => 16,
+    }
+}
+
+fn health_from_process_values(process_values: &serde_json::Value) -> &'static str {
+    let Some(obj) = process_values.as_object() else {
+        return "OK";
+    };
+    for (key, value) in obj {
+        if key.starts_with("alarm_") && value.as_bool().unwrap_or(false) {
+            return "WARN";
+        }
+    }
+    "OK"
+}
+
+fn resolve_opcua_advertised_host() -> String {
+    let bind_host = std::env::var("AIRLOCK_OPCUA_BIND_HOST")
+        .or_else(|_| std::env::var("AIRLOCK_OPCUA_HOST"))
+        .unwrap_or_else(|_| "0.0.0.0".to_string());
+    std::env::var("AIRLOCK_OPCUA_HOST").unwrap_or_else(|_| {
+        if bind_host == "0.0.0.0" {
+            "127.0.0.1".to_string()
+        } else {
+            bind_host
+        }
+    })
+}
+
+fn build_opcua_endpoint_url(host: &str, port: u16, path: &str) -> String {
+    let normalized_path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("opc.tcp://{host}:{port}{normalized_path}")
+}
+
+fn allocate_opcua_port_for_pea(pea_id: &str, forced_port: Option<u16>) -> anyhow::Result<u16> {
+    let (range_min, range_max) = parse_opcua_port_range()?;
+    let store_path = opcua_port_store_path();
+    let mut store = load_opcua_port_store(&store_path)?;
+    validate_store_collisions(&store.allocations)?;
+
+    let assigned_port = if let Some(port) = forced_port {
+        if let Some(conflict) = store
+            .allocations
+            .iter()
+            .find(|(existing_pea, existing_port)| {
+                existing_pea.as_str() != pea_id && **existing_port == port
+            })
+        {
+            return Err(anyhow::anyhow!(
+                "OPC UA port collision: {pea_id} cannot use {}, already allocated to {}",
+                port,
+                conflict.0
+            ));
+        }
+        store.allocations.insert(pea_id.to_string(), port);
+        port
+    } else if let Some(existing) = store.allocations.get(pea_id).copied() {
+        if existing < range_min || existing > range_max {
+            return Err(anyhow::anyhow!(
+                "Stored OPC UA port {existing} for {pea_id} is outside configured range {range_min}-{range_max}"
+            ));
+        }
+        existing
+    } else {
+        let used_ports: HashSet<u16> = store.allocations.values().copied().collect();
+        let Some(next_port) = (range_min..=range_max).find(|port| !used_ports.contains(port))
+        else {
+            return Err(anyhow::anyhow!(
+                "No available OPC UA ports in configured range {range_min}-{range_max}"
+            ));
+        };
+        store.allocations.insert(pea_id.to_string(), next_port);
+        next_port
+    };
+
+    write_opcua_port_store(&store_path, &store)?;
+    Ok(assigned_port)
+}
+
+fn parse_opcua_port_range() -> anyhow::Result<(u16, u16)> {
+    let configured = std::env::var("UNDERHILL_OPCUA_PORT_RANGE").unwrap_or_else(|_| {
+        format!("{DEFAULT_OPCUA_PORT_RANGE_MIN}-{DEFAULT_OPCUA_PORT_RANGE_MAX}")
+    });
+    let mut parts = configured.split('-');
+    let start_str = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Invalid UNDERHILL_OPCUA_PORT_RANGE {configured}"))?;
+    let end_str = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Invalid UNDERHILL_OPCUA_PORT_RANGE {configured}"))?;
+    if parts.next().is_some() {
+        return Err(anyhow::anyhow!(
+            "Invalid UNDERHILL_OPCUA_PORT_RANGE {configured}; expected start-end"
+        ));
+    }
+    let start = start_str
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("Invalid port range start {start_str}"))?;
+    let end = end_str
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("Invalid port range end {end_str}"))?;
+    if start > end {
+        return Err(anyhow::anyhow!(
+            "Invalid UNDERHILL_OPCUA_PORT_RANGE {configured}; start must be <= end"
+        ));
+    }
+    Ok((start, end))
+}
+
+fn opcua_port_store_path() -> PathBuf {
+    if let Ok(path) = std::env::var("UNDERHILL_OPCUA_PORT_ALLOCATIONS_FILE") {
+        return PathBuf::from(path);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join("opcua_port_allocations.json")
+}
+
+fn load_opcua_port_store(path: &FsPath) -> anyhow::Result<OpcuaPortAllocationStore> {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let store =
+                serde_json::from_str::<OpcuaPortAllocationStore>(&contents).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Failed to parse OPC UA port allocation file {}: {err}",
+                        path.display()
+                    )
+                })?;
+            Ok(store)
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(OpcuaPortAllocationStore::default()),
+        Err(err) => Err(anyhow::anyhow!(
+            "Failed to read OPC UA port allocation file {}: {err}",
+            path.display()
+        )),
+    }
+}
+
+fn validate_store_collisions(allocations: &BTreeMap<String, u16>) -> anyhow::Result<()> {
+    let mut reverse: HashMap<u16, String> = HashMap::new();
+    for (pea_id, port) in allocations {
+        if let Some(existing_pea) = reverse.insert(*port, pea_id.clone()) {
+            return Err(anyhow::anyhow!(
+                "OPC UA port collision in allocation file: port {} assigned to {} and {}",
+                port,
+                existing_pea,
+                pea_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_opcua_port_store(path: &FsPath, store: &OpcuaPortAllocationStore) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to create OPC UA allocation directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let payload = serde_json::to_string_pretty(store)
+        .map_err(|err| anyhow::anyhow!("Failed to serialize OPC UA allocation store: {err}"))?;
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, payload)
+        .map_err(|err| anyhow::anyhow!("Failed to write {}: {err}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path)
+        .map_err(|err| anyhow::anyhow!("Failed to move {} into place: {err}", path.display()))?;
+    Ok(())
+}
+
+async fn open_zenoh_session() -> anyhow::Result<Session> {
+    let mut config = zenoh::Config::default();
+    if let Ok(endpoint) = std::env::var("ZENOH_ROUTER") {
+        config
+            .insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    zenoh::open(config).await.map_err(|e| anyhow::anyhow!(e))
+}
+
+async fn publish_pea_uns(
+    context: &AppContext,
+    snapshot: &Snapshot,
+    runtime_state: PeaRuntimeState,
+) {
+    let pea_id = snapshot.mtp_runtime.pea_information_label.tag_name.clone();
+    let service_tag = snapshot
+        .mtp_runtime
+        .service_information
+        .service_name
+        .clone();
+    let node_id = context.node_id.clone();
+
+    let announce_topic = format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/announce");
+    let status_topic = format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/status");
+    let service_state_topic =
+        format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/services/{service_tag}/state");
+
+    let service_state = format!("{:?}", snapshot.mtp_state_machine.current_state);
+    let service_state_code = packml_state_code(snapshot.mtp_state_machine.current_state);
+    let announce_payload = json!({
+        "pea_id": pea_id,
+        "name": snapshot.mtp_runtime.pea_information_label.module_name,
+        "version": snapshot.mtp_runtime.pea_information_label.software_revision,
+        "services": [{
+            "tag": service_tag,
+            "name": snapshot.mtp_runtime.service_information.service_name,
+        }],
+        "opcua_endpoint": snapshot.diagnostics.endpoint_url,
+        "timestamp_ms": snapshot.timestamp_ms,
+    });
+    let status_payload = json!({
+        "pea_id": snapshot.mtp_runtime.pea_information_label.tag_name,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "services": [{
+            "tag": snapshot.mtp_runtime.service_information.service_name,
+            "state": service_state,
+            "state_code": service_state_code,
+            "current_procedure_id": serde_json::Value::Null,
+        }],
+        "opcua_endpoint": snapshot.diagnostics.endpoint_url,
+        "last_updated": snapshot.timestamp_ms,
+    });
+    let service_payload = json!({
+        "state": format!("{:?}", snapshot.mtp_state_machine.current_state),
+        "state_code": service_state_code,
+        "current_procedure_id": serde_json::Value::Null,
+        "timestamp_ms": snapshot.timestamp_ms,
+    });
+
+    if let Some(session) = context.zenoh_session.as_ref() {
+        if let Err(err) = session
+            .put(&announce_topic, announce_payload.to_string())
+            .await
+        {
+            error!("Failed to publish announce topic {announce_topic}: {err}");
+        }
+        if let Err(err) = session.put(&status_topic, status_payload.to_string()).await {
+            error!("Failed to publish status topic {status_topic}: {err}");
+        }
+        if let Err(err) = session
+            .put(&service_state_topic, service_payload.to_string())
+            .await
+        {
+            error!("Failed to publish service state topic {service_state_topic}: {err}");
+        }
+    }
+
+    if let Some(mqtt) = context.mqtt_uns.as_ref() {
+        if let Err(err) = mqtt.publish_json(&announce_topic, &announce_payload).await {
+            error!("Failed to MQTT-publish {announce_topic}: {err}");
+        }
+        if let Err(err) = mqtt.publish_json(&status_topic, &status_payload).await {
+            error!("Failed to MQTT-publish {status_topic}: {err}");
+        }
+        if let Err(err) = mqtt
+            .publish_json(&service_state_topic, &service_payload)
+            .await
+        {
+            error!("Failed to MQTT-publish {service_state_topic}: {err}");
+        }
+    }
+}
+
+async fn publish_subsystem_uns(
+    context: &AppContext,
+    pea_id: &str,
+    service_tag: &str,
+    service_state: &str,
+    runtime_state: PeaRuntimeState,
+    timestamp_ms: u64,
+    process_values: serde_json::Value,
+) {
+    let node_id = context.node_id.clone();
+    let announce_topic = format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/announce");
+    let status_topic = format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/status");
+    let service_state_topic =
+        format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/services/{service_tag}/state");
+
+    let state_code = subsystem_packml_state_code(service_state);
+    let announce_payload = json!({
+        "pea_id": pea_id,
+        "name": if pea_id == DEFAULT_ECLSS_PEA_ID { "Underhill ECLSS" } else { "Underhill Sabatier" },
+        "version": "0.1.0",
+        "services": [{
+            "tag": service_tag,
+            "name": service_tag,
+        }],
+        "opcua_endpoint": context.pea_opcua_endpoints.get(pea_id).cloned().unwrap_or_default(),
+        "timestamp_ms": timestamp_ms,
+    });
+    let status_payload = json!({
+        "pea_id": pea_id,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "services": [{
+            "tag": service_tag,
+            "state": service_state,
+            "state_code": state_code,
+            "current_procedure_id": serde_json::Value::Null,
+        }],
+        "opcua_endpoint": context.pea_opcua_endpoints.get(pea_id).cloned().unwrap_or_default(),
+        "last_updated": timestamp_ms,
+    });
+    let service_payload = json!({
+        "state": service_state,
+        "state_code": state_code,
+        "current_procedure_id": serde_json::Value::Null,
+        "timestamp_ms": timestamp_ms,
+    });
+
+    if let Some(session) = context.zenoh_session.as_ref() {
+        if let Err(err) = session
+            .put(&announce_topic, announce_payload.to_string())
+            .await
+        {
+            error!("Failed to publish announce topic {announce_topic}: {err}");
+        }
+        if let Err(err) = session.put(&status_topic, status_payload.to_string()).await {
+            error!("Failed to publish status topic {status_topic}: {err}");
+        }
+        if let Err(err) = session
+            .put(&service_state_topic, service_payload.to_string())
+            .await
+        {
+            error!("Failed to publish service state topic {service_state_topic}: {err}");
+        }
+    }
+
+    if let Some(mqtt) = context.mqtt_uns.as_ref() {
+        if let Err(err) = mqtt.publish_json(&announce_topic, &announce_payload).await {
+            error!("Failed to MQTT-publish {announce_topic}: {err}");
+        }
+        if let Err(err) = mqtt.publish_json(&status_topic, &status_payload).await {
+            error!("Failed to MQTT-publish {status_topic}: {err}");
+        }
+        if let Err(err) = mqtt
+            .publish_json(&service_state_topic, &service_payload)
+            .await
+        {
+            error!("Failed to MQTT-publish {service_state_topic}: {err}");
+        }
+    }
+
+    if let Some(values) = process_values.as_object() {
+        for (key, value) in values {
+            if key == "timestamp_ms" || key.starts_with("alarm_") {
+                continue;
+            }
+            let data_topic = format!("murph/habitat/nodes/{node_id}/pea/{pea_id}/data/{key}");
+            if let Some(session) = context.zenoh_session.as_ref() {
+                if let Err(err) = session.put(&data_topic, value.to_string()).await {
+                    error!("Failed to publish data topic {data_topic}: {err}");
+                }
+            }
+            if let Some(mqtt) = context.mqtt_uns.as_ref() {
+                let payload = json!({ "value": value, "timestamp_ms": timestamp_ms });
+                if let Err(err) = mqtt.publish_json(&data_topic, &payload).await {
+                    error!("Failed to MQTT-publish {data_topic}: {err}");
+                }
+            }
+        }
+    }
+}
+
+fn packml_state_code(state: model::ServiceState) -> u32 {
+    match state {
+        model::ServiceState::Idle => 16,
+        model::ServiceState::Starting => 8,
+        model::ServiceState::Execute => 64,
+        model::ServiceState::Completing => 65536,
+        model::ServiceState::Completed => 131072,
+        model::ServiceState::Pausing => 8192,
+        model::ServiceState::Paused => 32,
+        model::ServiceState::Resuming => 16384,
+        model::ServiceState::Holding => 1024,
+        model::ServiceState::Held => 2048,
+        model::ServiceState::Unholding => 4096,
+        model::ServiceState::Stopping => 128,
+        model::ServiceState::Stopped => 4,
+        model::ServiceState::Aborting => 256,
+        model::ServiceState::Aborted => 512,
+        model::ServiceState::Resetting => 32768,
+    }
+}
+
+// ============================================================================
+// MTP Compliance (Phase 2): Parameter Type System & Procedure Calling Convention
+// ============================================================================
+
+/// Get MTP manifest (CAEX XML) for a PEA
+async fn api_v2_get_manifest(
+    Path(pea_id): Path<String>,
+) -> Result<(axum::http::StatusCode, String), (StatusCode, String)> {
+    let manifest_name = match pea_id.as_str() {
+        DEFAULT_AIRLOCK_PEA_ID => "AIRLOCK-MTP-Manifest.aml",
+        DEFAULT_ECLSS_PEA_ID => "ECLSS-MTP-Manifest.aml",
+        DEFAULT_SABATIER_PEA_ID => "SABATIER-MTP-Manifest.aml",
+        _ => return Err((StatusCode::NOT_FOUND, format!("Unknown PEA: {pea_id}"))),
+    };
+
+    // Attempt to load from Focus directory
+    let manifest_path = PathBuf::from("/home/earthling/Documents/Focus").join(manifest_name);
+
+    match fs::read_to_string(&manifest_path) {
+        Ok(content) => Ok((StatusCode::OK, content)),
+        Err(_) => {
+            // Return stub manifest for now
+            Ok((
+                StatusCode::OK,
+                format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?>
+<!-- MTP Manifest for {pea_id} (stub - see /home/earthling/Documents/Focus/{manifest_name}) -->
+<CAEXFile xmlns="http://www.plcopen.org/xml/tc6_0201" SchemaVersion="2.15">
+  <Description>MTP Manifest for {pea_id}</Description>
+</CAEXFile>"#
+                ),
+            ))
+        }
+    }
+}
+
+/// List services for a PEA
+async fn api_v2_get_service(
+    Path((pea_id, service_name)): Path<(String, String)>,
+    State(_context): State<AppContext>,
+) -> Result<axum::Json<ServiceDefinition>, (StatusCode, String)> {
+    // For now, return stub definitions. In full implementation, these would be loaded from manifest
+    match (pea_id.as_str(), service_name.as_str()) {
+        (DEFAULT_AIRLOCK_PEA_ID, "Depressurization") => Ok(axum::Json(ServiceDefinition {
+            id: 1,
+            name: "Depressurization".to_string(),
+            parameters: vec![
+                ServiceParameter {
+                    name: "target_pressure_pa".to_string(),
+                    category: ParameterCategory::ProcedureParameter,
+                    data_type: "xs:double".to_string(),
+                    unit: Some("Pa".to_string()),
+                    min: Some(0.0),
+                    max: Some(150000.0),
+                    default_value: None,
+                    description: Some("Target chamber pressure".to_string()),
+                    current_value: Some(json!(3500.0)),
+                },
+                ServiceParameter {
+                    name: "timeout_sec".to_string(),
+                    category: ParameterCategory::ProcedureParameter,
+                    data_type: "xs:unsignedLong".to_string(),
+                    unit: Some("sec".to_string()),
+                    min: Some(10.0),
+                    max: Some(3600.0),
+                    default_value: Some(json!(300)),
+                    description: Some("Maximum time for operation".to_string()),
+                    current_value: Some(json!(300)),
+                },
+            ],
+            procedures: vec![ServiceProcedure {
+                id: 1,
+                name: "DepressurizeForEVA".to_string(),
+                description: Some("Depressurize to vacuum for EVA".to_string()),
+                input_parameters: vec!["target_pressure_pa".to_string(), "timeout_sec".to_string()],
+                output_parameters: vec!["final_pressure_pa".to_string()],
+            }],
+        })),
+        _ => Err((
+            StatusCode::NOT_FOUND,
+            format!("Service {service_name} not found in {pea_id}"),
+        )),
+    }
+}
+
+/// List parameters for a service
+async fn api_v2_list_service_parameters(
+    Path((pea_id, service_name)): Path<(String, String)>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<Vec<ServiceParameter>>, (StatusCode, String)> {
+    let service =
+        api_v2_get_service(Path((pea_id.clone(), service_name.clone())), State(context)).await?;
+
+    Ok(axum::Json(service.0.parameters))
+}
+
+/// Get a specific parameter value
+async fn api_v2_get_parameter(
+    Path((pea_id, service_name, param_name)): Path<(String, String, String)>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<ServiceParameter>, (StatusCode, String)> {
+    let service = api_v2_get_service(Path((pea_id, service_name)), State(context)).await?;
+
+    let param = service
+        .0
+        .parameters
+        .iter()
+        .find(|p| p.name == param_name)
+        .cloned()
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("Parameter {param_name} not found"),
+        ))?;
+
+    Ok(axum::Json(param))
+}
+
+/// Set a parameter value
+async fn api_v2_set_parameter(
+    Path((pea_id, service_name, param_name)): Path<(String, String, String)>,
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> Result<axum::Json<ServiceParameter>, (StatusCode, String)> {
+    let mut service = api_v2_get_service(Path((pea_id, service_name)), State(context))
+        .await?
+        .0;
+
+    // Update parameter value
+    let param = service
+        .parameters
+        .iter_mut()
+        .find(|p| p.name == param_name)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("Parameter {param_name} not found"),
+        ))?;
+
+    // Validate value against parameter type/constraints (simplified)
+    param.current_value = Some(payload);
+
+    Ok(axum::Json(param.clone()))
+}
+
+/// List procedures for a service
+async fn api_v2_list_procedures(
+    Path((pea_id, service_name)): Path<(String, String)>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<Vec<ServiceProcedure>>, (StatusCode, String)> {
+    let service = api_v2_get_service(Path((pea_id, service_name)), State(context)).await?;
+
+    Ok(axum::Json(service.0.procedures))
+}
+
+/// Get a specific procedure definition
+async fn api_v2_get_procedure(
+    Path((pea_id, service_name, proc_name)): Path<(String, String, String)>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<ServiceProcedure>, (StatusCode, String)> {
+    let service = api_v2_get_service(Path((pea_id, service_name)), State(context)).await?;
+
+    let proc = service
+        .0
+        .procedures
+        .iter()
+        .find(|p| p.name == proc_name)
+        .cloned()
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("Procedure {proc_name} not found"),
+        ))?;
+
+    Ok(axum::Json(proc))
+}
+
+/// Request execution of a procedure (MTP Calling Convention: Request ID != Current ID)
+async fn api_v2_request_procedure(
+    Path((pea_id, service_name, proc_name)): Path<(String, String, String)>,
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<ProcedureRequestInput>,
+) -> Result<axum::Json<ProcedureStatusResponse>, (StatusCode, String)> {
+    // Validate procedure exists
+    let _proc = api_v2_get_procedure(
+        Path((pea_id.clone(), service_name.clone(), proc_name.clone())),
+        State(context.clone()),
+    )
+    .await?;
+
+    let request_id = payload.request_id;
+
+    // store request in simulation
+    {
+        let mut sim = context.sim.write().await;
+        sim.request_procedure(ProcedureRequest {
+            request_id,
+            procedure_id: 0, // placeholder
+            procedure_name: proc_name.clone(),
+            service_name: service_name.clone(),
+            pea_id: pea_id.clone(),
+            parameters: payload.parameters.unwrap_or_default(),
+            requested_at_ms: Simulation::now_ms(),
+        });
+    }
+
+    Ok(axum::Json(ProcedureStatusResponse {
+        request_id,
+        current_request_id: 0, // Will match request_id when done
+        state: ProcedureState::Running,
+        progress_pct: 0.0,
+        result: HashMap::new(),
+        error_message: None,
+    }))
+}
+
+/// Get status of a procedure execution (MTP Polling: Current ID == Request ID indicates completion)
+async fn api_v2_get_procedure_status(
+    Path((pea_id, service_name, proc_name, request_id_str)): Path<(String, String, String, String)>,
+    State(context): State<AppContext>,
+) -> Result<axum::Json<ProcedureStatusResponse>, (StatusCode, String)> {
+    let request_id: u32 = request_id_str.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Invalid request_id format".to_string(),
+        )
+    })?;
+
+    // Validate procedure exists (clone values because they will be reused)
+    let _proc = api_v2_get_procedure(
+        Path((pea_id.clone(), service_name.clone(), proc_name.clone())),
+        State(context.clone()),
+    )
+    .await?;
+
+    // fetch runtime from simulation
+    {
+        let sim = context.sim.read().await;
+        let key = format!(
+            "{}/{}/{}",
+            pea_id.clone(),
+            service_name.clone(),
+            proc_name.clone()
+        );
+        if let Some(runtime) = sim.procedure_runtimes.get(&key) {
+            return Ok(axum::Json(ProcedureStatusResponse {
+                request_id,
+                current_request_id: runtime.current_request_id,
+                state: runtime.state.clone(),
+                progress_pct: runtime.progress_pct,
+                result: runtime.result.clone(),
+                error_message: runtime.error_message.clone(),
+            }));
+        }
+    }
+    // if not found, return error
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("Procedure runtime not found for request {}", request_id),
+    ))
+}

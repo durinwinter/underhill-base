@@ -1,0 +1,74 @@
+version: 1
+kind: underhill.pea.browse_tree_manifest
+generated_at: "2026-02-27T00:00:00Z"
+generator:
+  name: underhill-pea-codegen
+  version: 0.1.0
+
+node_id: local
+peas:
+  - pea_id: AIRLOCK-PEA-001
+    pea_name: Underhill Airlock
+    endpoint: opc.tcp://127.0.0.1:4841/underhill/airlock
+    namespace_uri: urn:underhill:local:pea:AIRLOCK-PEA-001
+    root_path: Objects/Underhill/AirlockPEA
+    node_families:
+      - InformationLabel
+      - Diagnostics
+      - DataAssemblies
+      - Services
+      - Simulation
+    required_paths:
+      - InformationLabel
+      - Diagnostics/OpcUa
+      - Diagnostics/Mapping
+      - DataAssemblies/Indicators
+      - DataAssemblies/Parameters
+      - DataAssemblies/Control
+      - Services/AirlockService/ServiceControl
+      - Services/AirlockService/ProcedureParameters
+      - Services/AirlockService/ProcessValueIn
+      - Services/AirlockService/ProcessValueOut
+      - Services/AirlockService/ReportValues
+
+  - pea_id: ECLSS-PEA-001
+    pea_name: Underhill ECLSS
+    endpoint: opc.tcp://127.0.0.1:4842/underhill/eclss
+    namespace_uri: urn:underhill:local:pea:ECLSS-PEA-001
+    root_path: Objects/Underhill/ECLSSPEA
+    node_families:
+      - InformationLabel
+      - Diagnostics
+      - DataAssemblies
+      - Services
+      - Simulation
+    required_paths:
+      - InformationLabel
+      - Diagnostics/OpcUa
+      - Diagnostics/Mapping
+      - DataAssemblies/Indicators
+      - DataAssemblies/Parameters
+      - Services/EclssService/ServiceControl
+      - Services/EclssService/ReportValues
+      - Simulation/FaultInjection
+
+  - pea_id: SABATIER-PEA-001
+    pea_name: Underhill Sabatier
+    endpoint: opc.tcp://127.0.0.1:4843/underhill/sabatier
+    namespace_uri: urn:underhill:local:pea:SABATIER-PEA-001
+    root_path: Objects/Underhill/SabatierPEA
+    node_families:
+      - InformationLabel
+      - Diagnostics
+      - DataAssemblies
+      - Services
+      - Simulation
+    required_paths:
+      - InformationLabel
+      - Diagnostics/OpcUa
+      - Diagnostics/Mapping
+      - DataAssemblies/Indicators
+      - DataAssemblies/Parameters
+      - Services/SabatierService/ServiceControl
+      - Services/SabatierService/ReportValues
+      - Simulation/FaultInjection
