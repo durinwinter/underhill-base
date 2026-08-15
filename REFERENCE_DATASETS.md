@@ -111,3 +111,4 @@ They may be reconsidered only for a narrowly documented algorithmic test that do
 6. Add ECLSS reliability and battery/bearing degradation manifests as their PEAs become physically modeled.
 7. Record every dataset-derived parameter set and campaign identifier in checkpoints, historian metadata, and evaluation reports.
 
+Current implementation status: the Airlock equalization and vent valves now provide deterministic lag, travel-rate limiting, deadband, breakaway stiction, leakage, sensor bias, and hard-stuck behavior with commanded/true/sensed/residual telemetry. Hysteresis, stochastic noise, dataset manifests, parameter fitting, and held-out comparison metrics remain to be implemented before claiming DAMADICS or ISDB calibration.

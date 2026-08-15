@@ -33,7 +33,7 @@ use model::{
     LeakRateUpdateRequest, MtpModesUpdateRequest, OperationMode, ParameterCategory,
     PermissionsUpdateRequest, ProcedureRequest, ProcedureRequestInput, ProcedureState,
     ProcedureStatusResponse, SecurityProfileRequest, ServiceDefinition, ServiceParameter,
-    ServiceProcedure, Snapshot,
+    ServiceProcedure, Snapshot, ValveFaultUpdateRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -547,6 +547,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/permissions", post(api_set_permissions))
         .route("/api/modes", post(api_set_modes))
         .route("/api/faults/leak-rate", post(api_set_leak_rate))
+        .route("/api/faults/valve", post(api_set_valve_fault))
         .route("/api/commands/{source}/write", post(api_write_command))
         .route("/ws", get(ws_handler))
         .fallback_service(ServeDir::new(frontend_dir).not_found_service(ServeFile::new(index_file)))
@@ -582,6 +583,7 @@ fn is_state_journal_kind(kind: &str) -> bool {
             | "permissions_changed"
             | "operating_mode_changed"
             | "fault_injected"
+            | "valve_fault_changed"
             | "command_processed"
             | "opcua_command_processed"
             | "procedure_requested"
@@ -2353,6 +2355,46 @@ async fn api_set_leak_rate(
     )
     .await;
     (StatusCode::OK, axum::Json(snapshot.alarms))
+}
+
+async fn api_set_valve_fault(
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<ValveFaultUpdateRequest>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
+    let valve = payload.valve.clone();
+    let snapshot = {
+        let mut sim = context.sim.write().await;
+        sim.set_valve_fault(payload)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+        sim.snapshot()
+    };
+    let result = json!({
+        "valve": valve,
+        "equalize": {
+            "command_pct": snapshot.equalize_valve_command_pct,
+            "true_position_pct": snapshot.equalize_valve_pct,
+            "sensed_position_pct": snapshot.equalize_valve_sensed_pct,
+            "residual_pct": snapshot.equalize_valve_residual_pct,
+            "stiction_active": snapshot.equalize_valve_stiction_active
+        },
+        "vent": {
+            "command_pct": snapshot.vent_valve_command_pct,
+            "true_position_pct": snapshot.vent_valve_pct,
+            "sensed_position_pct": snapshot.vent_valve_sensed_pct,
+            "residual_pct": snapshot.vent_valve_residual_pct,
+            "stiction_active": snapshot.vent_valve_stiction_active
+        }
+    });
+    journal_operation(
+        &context,
+        "valve_fault_changed",
+        DEFAULT_AIRLOCK_PEA_ID.to_string(),
+        result.clone(),
+    )
+    .await;
+    let _ = context.snapshots_tx.send(snapshot);
+    Ok(axum::Json(result))
 }
 
 async fn api_write_command(

@@ -178,6 +178,14 @@ struct OpcuaNodes {
     pump_on: NodeId,
     equalize_valve_pct: NodeId,
     vent_valve_pct: NodeId,
+    equalize_valve_command_pct: NodeId,
+    equalize_valve_sensed_pct: NodeId,
+    equalize_valve_residual_pct: NodeId,
+    equalize_valve_stiction_active: NodeId,
+    vent_valve_command_pct: NodeId,
+    vent_valve_sensed_pct: NodeId,
+    vent_valve_residual_pct: NodeId,
+    vent_valve_stiction_active: NodeId,
     alarm_summary: NodeId,
     out_of_spec: NodeId,
 
@@ -909,6 +917,38 @@ fn build_address_space(
         ns,
         "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.VentValvePct",
     );
+    let equalize_valve_command_pct = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.EqualizeValveCommandPct",
+    );
+    let equalize_valve_sensed_pct = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.EqualizeValveSensedPct",
+    );
+    let equalize_valve_residual_pct = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.EqualizeValveResidualPct",
+    );
+    let equalize_valve_stiction_active = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.EqualizeValveStictionActive",
+    );
+    let vent_valve_command_pct = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.VentValveCommandPct",
+    );
+    let vent_valve_sensed_pct = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.VentValveSensedPct",
+    );
+    let vent_valve_residual_pct = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.VentValveResidualPct",
+    );
+    let vent_valve_stiction_active = NodeId::new(
+        ns,
+        "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.VentValveStictionActive",
+    );
     let alarm_summary = NodeId::new(
         ns,
         "MarsBase.AirlockPEA.ServiceSet.AirlockService.DataAssemblies.Indicators.AlarmSummary",
@@ -996,6 +1036,32 @@ fn build_address_space(
         &vent_valve_pct,
         "VentValvePct",
         0.0f64,
+        false,
+    );
+    for (node, name) in [
+        (&equalize_valve_command_pct, "EqualizeValveCommandPct"),
+        (&equalize_valve_sensed_pct, "EqualizeValveSensedPct"),
+        (&equalize_valve_residual_pct, "EqualizeValveResidualPct"),
+        (&vent_valve_command_pct, "VentValveCommandPct"),
+        (&vent_valve_sensed_pct, "VentValveSensedPct"),
+        (&vent_valve_residual_pct, "VentValveResidualPct"),
+    ] {
+        insert_var(&mut address_space, &indicators, node, name, 0.0f64, false);
+    }
+    insert_var(
+        &mut address_space,
+        &indicators,
+        &equalize_valve_stiction_active,
+        "EqualizeValveStictionActive",
+        false,
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &indicators,
+        &vent_valve_stiction_active,
+        "VentValveStictionActive",
+        false,
         false,
     );
     insert_var(
@@ -1607,6 +1673,14 @@ fn build_address_space(
             pump_on,
             equalize_valve_pct,
             vent_valve_pct,
+            equalize_valve_command_pct,
+            equalize_valve_sensed_pct,
+            equalize_valve_residual_pct,
+            equalize_valve_stiction_active,
+            vent_valve_command_pct,
+            vent_valve_sensed_pct,
+            vent_valve_residual_pct,
+            vent_valve_stiction_active,
             alarm_summary,
             out_of_spec,
             operator_control_enabled,
@@ -2095,6 +2169,46 @@ fn spawn_snapshot_sync(
                         &nodes.vent_valve_pct,
                         None,
                         DataValue::new_now(snapshot.vent_valve_pct),
+                    ),
+                    (
+                        &nodes.equalize_valve_command_pct,
+                        None,
+                        DataValue::new_now(snapshot.equalize_valve_command_pct),
+                    ),
+                    (
+                        &nodes.equalize_valve_sensed_pct,
+                        None,
+                        DataValue::new_now(snapshot.equalize_valve_sensed_pct),
+                    ),
+                    (
+                        &nodes.equalize_valve_residual_pct,
+                        None,
+                        DataValue::new_now(snapshot.equalize_valve_residual_pct),
+                    ),
+                    (
+                        &nodes.equalize_valve_stiction_active,
+                        None,
+                        DataValue::new_now(snapshot.equalize_valve_stiction_active),
+                    ),
+                    (
+                        &nodes.vent_valve_command_pct,
+                        None,
+                        DataValue::new_now(snapshot.vent_valve_command_pct),
+                    ),
+                    (
+                        &nodes.vent_valve_sensed_pct,
+                        None,
+                        DataValue::new_now(snapshot.vent_valve_sensed_pct),
+                    ),
+                    (
+                        &nodes.vent_valve_residual_pct,
+                        None,
+                        DataValue::new_now(snapshot.vent_valve_residual_pct),
+                    ),
+                    (
+                        &nodes.vent_valve_stiction_active,
+                        None,
+                        DataValue::new_now(snapshot.vent_valve_stiction_active),
                     ),
                     (
                         &nodes.alarm_summary,

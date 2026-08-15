@@ -8,7 +8,7 @@ use crate::model::{
     DiagnosticsState, EventEntry, LeakRateUpdateRequest, MtpModes, MtpModesUpdateRequest,
     MtpProcedureRuntime, MtpRuntime, MtpStateMachine, MtpTreeResponse, PeaInformationLabel,
     Permissions, PermissionsUpdateRequest, ProcedureRequest, ProcedureRuntime, ProcedureState,
-    ServiceInformation, ServiceState, Snapshot,
+    ServiceInformation, ServiceState, Snapshot, ValveFaultUpdateRequest,
 };
 
 use serde_json::json;
@@ -17,6 +17,96 @@ const PROC_DEPRESSURIZE: &str = "Proc_DepressurizeForEVA";
 const PROC_PRESSURIZE: &str = "Proc_PressurizeForEntry";
 const PROC_MANUAL_JOG: &str = "Proc_ManualDoorJog";
 const FIXED_TIMESTEP_SEC: f64 = 0.05;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct ValveActuatorDynamics {
+    initialized: bool,
+    command_pct: f64,
+    sensed_pct: f64,
+    max_travel_rate_pct_per_sec: f64,
+    response_time_constant_sec: f64,
+    deadband_pct: f64,
+    stiction_breakaway_pct: f64,
+    sensor_bias_pct: f64,
+    hard_stuck: bool,
+    leakage_pct: f64,
+    in_motion: bool,
+    stiction_active: bool,
+}
+
+impl Default for ValveActuatorDynamics {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            command_pct: 0.0,
+            sensed_pct: 0.0,
+            max_travel_rate_pct_per_sec: 35.0,
+            response_time_constant_sec: 0.4,
+            deadband_pct: 0.25,
+            stiction_breakaway_pct: 0.0,
+            sensor_bias_pct: 0.0,
+            hard_stuck: false,
+            leakage_pct: 0.0,
+            in_motion: false,
+            stiction_active: false,
+        }
+    }
+}
+
+impl ValveActuatorDynamics {
+    fn new_at(position_pct: f64) -> Self {
+        Self {
+            initialized: true,
+            command_pct: position_pct,
+            sensed_pct: position_pct,
+            ..Self::default()
+        }
+    }
+
+    fn prepare_after_restore(&mut self, actual_position_pct: f64) {
+        if !self.initialized {
+            self.initialized = true;
+            self.command_pct = actual_position_pct;
+            self.sensed_pct = actual_position_pct;
+        }
+    }
+
+    fn step(&mut self, actual_position_pct: &mut f64, dt_sec: f64) {
+        let error = self.command_pct - *actual_position_pct;
+        if self.hard_stuck {
+            self.in_motion = false;
+            self.stiction_active = error.abs() > self.deadband_pct;
+        } else {
+            if !self.in_motion && error.abs() > self.stiction_breakaway_pct {
+                self.in_motion = true;
+            }
+            if self.in_motion {
+                let desired_rate = error / self.response_time_constant_sec.max(0.01);
+                let rate = desired_rate.clamp(
+                    -self.max_travel_rate_pct_per_sec,
+                    self.max_travel_rate_pct_per_sec,
+                );
+                *actual_position_pct = (*actual_position_pct + rate * dt_sec).clamp(0.0, 100.0);
+                if (self.command_pct - *actual_position_pct).abs() <= self.deadband_pct {
+                    *actual_position_pct = self.command_pct;
+                    self.in_motion = false;
+                }
+            }
+            self.stiction_active = !self.in_motion
+                && (self.command_pct - *actual_position_pct).abs() > self.deadband_pct;
+        }
+        self.sensed_pct = (*actual_position_pct + self.sensor_bias_pct).clamp(0.0, 100.0);
+    }
+
+    fn effective_flow_position_pct(&self, actual_position_pct: f64) -> f64 {
+        actual_position_pct.max(self.leakage_pct).clamp(0.0, 100.0)
+    }
+
+    fn residual_pct(&self) -> f64 {
+        self.command_pct - self.sensed_pct
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Simulation {
@@ -33,6 +123,10 @@ pub struct Simulation {
     outer_lock_engaged: bool,
     equalize_valve_pct: f64,
     vent_valve_pct: f64,
+    #[serde(default)]
+    equalize_valve_dynamics: ValveActuatorDynamics,
+    #[serde(default)]
+    vent_valve_dynamics: ValveActuatorDynamics,
     pump_on: bool,
     pump_current_a: f64,
     leak_rate_nominal: f64,
@@ -84,6 +178,10 @@ impl Simulation {
         self.diagnostics.connected_client_summary = "none".to_string();
         self.diagnostics.connected_clients.clear();
         self.diagnostics.subscription_count = 0;
+        self.equalize_valve_dynamics
+            .prepare_after_restore(self.equalize_valve_pct);
+        self.vent_valve_dynamics
+            .prepare_after_restore(self.vent_valve_pct);
         self.log_event("INFO", "SYSTEM", "Plant state restored from checkpoint");
     }
 
@@ -169,6 +267,8 @@ impl Simulation {
             outer_lock_engaged: true,
             equalize_valve_pct: 0.0,
             vent_valve_pct: 0.0,
+            equalize_valve_dynamics: ValveActuatorDynamics::new_at(0.0),
+            vent_valve_dynamics: ValveActuatorDynamics::new_at(0.0),
             pump_on: false,
             pump_current_a: 0.0,
             leak_rate_nominal: 0.0005,
@@ -573,6 +673,14 @@ impl Simulation {
             outer_lock_engaged: self.outer_lock_engaged,
             equalize_valve_pct: self.equalize_valve_pct,
             vent_valve_pct: self.vent_valve_pct,
+            equalize_valve_command_pct: self.equalize_valve_dynamics.command_pct,
+            equalize_valve_sensed_pct: self.equalize_valve_dynamics.sensed_pct,
+            equalize_valve_residual_pct: self.equalize_valve_dynamics.residual_pct(),
+            equalize_valve_stiction_active: self.equalize_valve_dynamics.stiction_active,
+            vent_valve_command_pct: self.vent_valve_dynamics.command_pct,
+            vent_valve_sensed_pct: self.vent_valve_dynamics.sensed_pct,
+            vent_valve_residual_pct: self.vent_valve_dynamics.residual_pct(),
+            vent_valve_stiction_active: self.vent_valve_dynamics.stiction_active,
             pump_on: self.pump_on,
             pump_current_a: self.pump_current_a,
             state_name: self.state_name.clone(),
@@ -628,8 +736,8 @@ impl Simulation {
         match self.active_command.command {
             CommandEnum::StartDepressurizeCycle => {
                 self.pump_on = true;
-                self.vent_valve_pct = 100.0;
-                self.equalize_valve_pct = 0.0;
+                self.vent_valve_dynamics.command_pct = 100.0;
+                self.equalize_valve_dynamics.command_pct = 0.0;
                 self.pump_current_a = 9.5;
                 self.inner_door_target_pct = 0.0;
                 self.outer_door_target_pct = 0.0;
@@ -655,8 +763,8 @@ impl Simulation {
             CommandEnum::StartPressurizeCycle => {
                 self.pump_on = false;
                 self.pump_current_a = 0.0;
-                self.vent_valve_pct = 0.0;
-                self.equalize_valve_pct = 100.0;
+                self.vent_valve_dynamics.command_pct = 0.0;
+                self.equalize_valve_dynamics.command_pct = 100.0;
                 self.inner_door_target_pct = 0.0;
                 self.outer_door_target_pct = 0.0;
                 self.inner_door_position_pct =
@@ -726,8 +834,19 @@ impl Simulation {
         let pressure_hab = 101_325.0;
         let pressure_mars = 700.0;
 
-        let f_eq = self.equalize_valve_pct / 100.0;
-        let f_vent = self.vent_valve_pct / 100.0;
+        self.equalize_valve_dynamics
+            .step(&mut self.equalize_valve_pct, dt_sec);
+        self.vent_valve_dynamics
+            .step(&mut self.vent_valve_pct, dt_sec);
+
+        let f_eq = self
+            .equalize_valve_dynamics
+            .effective_flow_position_pct(self.equalize_valve_pct)
+            / 100.0;
+        let f_vent = self
+            .vent_valve_dynamics
+            .effective_flow_position_pct(self.vent_valve_pct)
+            / 100.0;
         let pump_factor = if self.pump_on { 1.0 } else { 0.0 };
 
         let k_eq = 0.04;
@@ -755,6 +874,41 @@ impl Simulation {
         } else {
             self.pump_current_a = 0.0;
         }
+    }
+
+    pub fn set_valve_fault(&mut self, request: ValveFaultUpdateRequest) -> Result<(), String> {
+        let dynamics = match request.valve.trim().to_ascii_lowercase().as_str() {
+            "equalize" | "equalization" | "equalize_valve" => &mut self.equalize_valve_dynamics,
+            "vent" | "vent_valve" => &mut self.vent_valve_dynamics,
+            _ => return Err("Unknown valve. Use equalize or vent".to_string()),
+        };
+        if let Some(value) = request.stiction_breakaway_pct {
+            dynamics.stiction_breakaway_pct = value.clamp(0.0, 100.0);
+        }
+        if let Some(value) = request.sensor_bias_pct {
+            dynamics.sensor_bias_pct = value.clamp(-100.0, 100.0);
+        }
+        if let Some(value) = request.max_travel_rate_pct_per_sec {
+            if !value.is_finite() || value <= 0.0 {
+                return Err("max_travel_rate_pct_per_sec must be positive".to_string());
+            }
+            dynamics.max_travel_rate_pct_per_sec = value.min(1_000.0);
+        }
+        if let Some(value) = request.hard_stuck {
+            dynamics.hard_stuck = value;
+        }
+        if let Some(value) = request.leakage_pct {
+            dynamics.leakage_pct = value.clamp(0.0, 100.0);
+        }
+        self.log_event(
+            "WARN",
+            "FAULT_INJECTION",
+            format!(
+                "Valve actuator fault parameters updated for {}",
+                request.valve
+            ),
+        );
+        Ok(())
     }
 
     fn update_alarms(&mut self) {
@@ -877,12 +1031,12 @@ impl Simulation {
                 true
             }
             CommandEnum::SetEqualizeValvePct => {
-                self.equalize_valve_pct = param1.clamp(0.0, 100.0);
+                self.equalize_valve_dynamics.command_pct = param1.clamp(0.0, 100.0);
                 self.finish_active(CommandStatusEnum::Complete, "Equalize valve updated");
                 true
             }
             CommandEnum::SetVentValvePct => {
-                self.vent_valve_pct = param1.clamp(0.0, 100.0);
+                self.vent_valve_dynamics.command_pct = param1.clamp(0.0, 100.0);
                 self.finish_active(CommandStatusEnum::Complete, "Vent valve updated");
                 true
             }
@@ -918,8 +1072,8 @@ impl Simulation {
             CommandEnum::AbortCycle => {
                 self.pump_on = false;
                 self.pump_current_a = 0.0;
-                self.equalize_valve_pct = 0.0;
-                self.vent_valve_pct = 0.0;
+                self.equalize_valve_dynamics.command_pct = 0.0;
+                self.vent_valve_dynamics.command_pct = 0.0;
                 self.finish_active(CommandStatusEnum::Aborted, "Abort requested");
                 self.state_name = "faulted".to_string();
                 true
@@ -1150,6 +1304,103 @@ fn display_command(command: CommandEnum) -> &'static str {
         CommandEnum::UnlockInnerDoor => "UNLOCK_INNER_DOOR",
         CommandEnum::LockOuterDoor => "LOCK_OUTER_DOOR",
         CommandEnum::UnlockOuterDoor => "UNLOCK_OUTER_DOOR",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn simulation() -> Simulation {
+        Simulation::new("NONE".to_string(), "opc.tcp://test".to_string())
+    }
+
+    #[test]
+    fn valve_position_is_rate_limited_instead_of_instantaneous() {
+        let mut sim = simulation();
+        sim.set_valve_fault(ValveFaultUpdateRequest {
+            valve: "vent".to_string(),
+            stiction_breakaway_pct: Some(0.0),
+            sensor_bias_pct: Some(0.0),
+            max_travel_rate_pct_per_sec: Some(10.0),
+            hard_stuck: Some(false),
+            leakage_pct: Some(0.0),
+        })
+        .unwrap();
+        sim.vent_valve_dynamics.command_pct = 100.0;
+        sim.step(1.0);
+        let snapshot = sim.snapshot();
+        assert!((snapshot.vent_valve_pct - 10.0).abs() < 1.0e-9);
+        assert!((snapshot.vent_valve_command_pct - 100.0).abs() < 1.0e-9);
+        assert!((snapshot.vent_valve_residual_pct - 90.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn stiction_holds_until_command_exceeds_breakaway() {
+        let mut sim = simulation();
+        sim.set_valve_fault(ValveFaultUpdateRequest {
+            valve: "equalize".to_string(),
+            stiction_breakaway_pct: Some(20.0),
+            sensor_bias_pct: None,
+            max_travel_rate_pct_per_sec: Some(100.0),
+            hard_stuck: None,
+            leakage_pct: None,
+        })
+        .unwrap();
+        sim.equalize_valve_dynamics.command_pct = 10.0;
+        sim.step(1.0);
+        assert_eq!(sim.snapshot().equalize_valve_pct, 0.0);
+        assert!(sim.snapshot().equalize_valve_stiction_active);
+
+        sim.equalize_valve_dynamics.command_pct = 30.0;
+        sim.step(0.1);
+        assert!(sim.snapshot().equalize_valve_pct > 0.0);
+        assert!(!sim.snapshot().equalize_valve_stiction_active);
+    }
+
+    #[test]
+    fn sensor_bias_changes_observation_not_physical_flow_position() {
+        let mut sim = simulation();
+        sim.set_valve_fault(ValveFaultUpdateRequest {
+            valve: "vent".to_string(),
+            stiction_breakaway_pct: None,
+            sensor_bias_pct: Some(7.5),
+            max_travel_rate_pct_per_sec: None,
+            hard_stuck: Some(true),
+            leakage_pct: None,
+        })
+        .unwrap();
+        sim.step(0.05);
+        let snapshot = sim.snapshot();
+        assert_eq!(snapshot.vent_valve_pct, 0.0);
+        assert_eq!(snapshot.vent_valve_sensed_pct, 7.5);
+        assert_eq!(snapshot.vent_valve_residual_pct, -7.5);
+    }
+
+    #[test]
+    fn actuator_fault_state_survives_checkpoint_serialization() {
+        let mut sim = simulation();
+        sim.set_valve_fault(ValveFaultUpdateRequest {
+            valve: "equalize".to_string(),
+            stiction_breakaway_pct: Some(12.0),
+            sensor_bias_pct: Some(-3.0),
+            max_travel_rate_pct_per_sec: Some(8.0),
+            hard_stuck: Some(true),
+            leakage_pct: Some(1.5),
+        })
+        .unwrap();
+        sim.equalize_valve_dynamics.command_pct = 75.0;
+        sim.step(0.05);
+        let restored: Simulation =
+            serde_json::from_slice(&serde_json::to_vec(&sim).unwrap()).unwrap();
+        assert_eq!(restored.equalize_valve_dynamics.command_pct, 75.0);
+        assert_eq!(
+            restored.equalize_valve_dynamics.stiction_breakaway_pct,
+            12.0
+        );
+        assert_eq!(restored.equalize_valve_dynamics.sensor_bias_pct, -3.0);
+        assert!(restored.equalize_valve_dynamics.hard_stuck);
+        assert_eq!(restored.equalize_valve_dynamics.leakage_pct, 1.5);
     }
 }
 

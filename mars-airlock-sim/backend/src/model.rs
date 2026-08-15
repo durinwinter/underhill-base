@@ -353,6 +353,14 @@ pub struct Snapshot {
     pub outer_lock_engaged: bool,
     pub equalize_valve_pct: f64,
     pub vent_valve_pct: f64,
+    pub equalize_valve_command_pct: f64,
+    pub equalize_valve_sensed_pct: f64,
+    pub equalize_valve_residual_pct: f64,
+    pub equalize_valve_stiction_active: bool,
+    pub vent_valve_command_pct: f64,
+    pub vent_valve_sensed_pct: f64,
+    pub vent_valve_residual_pct: f64,
+    pub vent_valve_stiction_active: bool,
     pub pump_on: bool,
     pub pump_current_a: f64,
     pub state_name: String,
@@ -396,6 +404,16 @@ pub struct MtpModesUpdateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeakRateUpdateRequest {
     pub leak_rate_nominal: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValveFaultUpdateRequest {
+    pub valve: String,
+    pub stiction_breakaway_pct: Option<f64>,
+    pub sensor_bias_pct: Option<f64>,
+    pub max_travel_rate_pct_per_sec: Option<f64>,
+    pub hard_stuck: Option<bool>,
+    pub leakage_pct: Option<f64>,
 }
 
 // ============================================================================

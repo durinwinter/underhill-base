@@ -29,7 +29,7 @@ Standalone Underhill Base simulator with:
 - Interlocks and explicit reject reasons
 - MTP mode controls (`operation_mode`, `command_en`, `command_en_reason`)
 - Permissions toggles (`operator_control_enabled`, `remote_control_enabled`)
-- Fault injection (`leak_rate_nominal`)
+- Fault injection (`leak_rate_nominal`, valve stiction/bias/rate/stuck/leakage)
 - Diagnostics and connected session reporting
 - ECLSS/Sabatier writeback lifecycle: `PENDING`, `APPLIED`, `SETTLING`, `COMPLETE`, `REJECTED`, `TIMED_OUT`
 
@@ -102,6 +102,11 @@ checkpoint plus a `shutdown_checkpoint_saved` journal record before the backend 
 Physics steps, HTTP state mutations, OPC UA commands, operational journal appends, and checkpoint
 capture share a plant transaction gate. Each checkpoint records the exact journal sequence it
 covers, allowing recovery code to identify—not silently ignore—the durable post-checkpoint tail.
+
+Airlock valve commands no longer change physical position instantaneously. The equalization and
+vent valves model rate-limited lag, deadband, stiction, hard-stuck faults, leakage, and sensor bias.
+HTTP snapshots and OPC UA expose commanded, true, and sensed position, command/sensor residual,
+and stiction state so controllers and diagnostic agents can be evaluated against non-ideal loops.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`
@@ -214,6 +219,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `PUT /api/v1/objects/{element_id}/value` (stubbed, returns `501`)
 - `GET /api/v1/objects/{element_id}/history`
 - `POST /api/security/profile`
+- `POST /api/faults/valve` (`equalize` or `vent`; configures actuator fault parameters)
 - `POST /api/permissions`
 - `POST /api/modes`
 - `POST /api/faults/leak-rate`
