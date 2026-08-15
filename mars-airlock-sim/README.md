@@ -8,7 +8,7 @@ Standalone Underhill Base simulator with:
 - Deterministic fast/medium/slow scheduler boundaries for continuous subsystem evolution
 - Writable request-variable command model with `Operator` and `Remote` channels
 - Staged subsystem writeback model for POL-driven `ECLSS` and `Sabatier` commands
-- MTP-aligned runtime model for seven PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`, `Water`, `Safety`)
+- MTP-aligned runtime model for eight PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`, `Water`, `Safety`, `Robotics/Maintenance`)
 - Native OPC UA servers via Rust crate `async-opcua` (one endpoint per PEA)
 - Validated shared PEA registry generating identity, type, service, namespace, endpoint-path, and i3X hierarchy metadata
 - UNS publishing over Zenoh and/or MQTT
@@ -24,6 +24,7 @@ Standalone Underhill Base simulator with:
   - `THERMAL-PEA-001` (conserved habitat heat, coolant loop, radiator rejection, thermal alarms)
   - `WATER-PEA-001` (conserved potable/waste/brine stocks, recovery, quality, demand, and alarms)
   - `SAFETY-PEA-001` (conserved habitat atmosphere, leak/makeup, fire/toxic gas, suppression, structure, and radiation)
+  - `ROBOTICS-PEA-001` (shared maintenance queue, finite crew/robot/tool capacity, and warehouse spares)
 
 ## Runtime Features Implemented
 
@@ -38,6 +39,7 @@ Standalone Underhill Base simulator with:
 - Fault injection (`leak_rate_nominal`, valve stiction/bias/rate/stuck/leakage)
 - Checkpointed plant-time validation campaigns with bounded fault ownership, agent observations, and scored reports
 - Seeded, checkpointed ECLSS ORU reliability with physical capacity loss, partial degradation, finite spares, and continuous repair work orders
+- Checkpointed shared maintenance dispatch: ECLSS repairs progress only when allocated crew/robot labor, tools, critical power, and the Maintenance PEA are available
 - Diagnostics and connected session reporting
 - ECLSS/Sabatier writeback lifecycle: `PENDING`, `APPLIED`, `SETTLING`, `COMPLETE`, `REJECTED`, `TIMED_OUT`
 
@@ -72,6 +74,7 @@ Optional OPC UA env:
 - `THERMAL_OPCUA_PORT` (optional explicit port override for Thermal PEA)
 - `WATER_OPCUA_PORT` (optional explicit port override for Water PEA)
 - `SAFETY_OPCUA_PORT` (optional explicit port override for Safety PEA)
+- `MAINTENANCE_OPCUA_PORT` (optional explicit port override for Robotics/Maintenance PEA)
 - `AIRLOCK_OPCUA_ENDPOINT_PATH` (default `/underhill/airlock`)
 - `UNDERHILL_OPCUA_PORT_RANGE` (default `4841-4899`)
 - `UNDERHILL_OPCUA_PORT_ALLOCATIONS_FILE` (default `backend/data/opcua_port_allocations.json`)
@@ -102,7 +105,7 @@ Continuous runtime env:
 The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
 fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
 plant elapsed time, Mars sol, time scale, step index, catch-up backlog, and persistence settings.
-The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, Thermal, Water, Safety, PEA runtime, operator,
+The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, Thermal, Water, Safety, Robotics/Maintenance, PEA runtime, operator,
 and scheduler state, retains the preceding checkpoint as a recovery fallback, and restores the
 same plant identity on restart. Lifecycle records are appended to `plant-events.ndjson`. Docker
 Compose mounts `backend/data`, so container replacement does not discard the represented plant.
@@ -211,6 +214,7 @@ Host URL:
 - `opc.tcp://127.0.0.1:${THERMAL_OPCUA_PORT:-4845}/underhill/thermal`
 - `opc.tcp://127.0.0.1:${WATER_OPCUA_PORT:-4846}/underhill/water`
 - `opc.tcp://127.0.0.1:${SAFETY_OPCUA_PORT:-4847}/underhill/safety`
+- `opc.tcp://127.0.0.1:${MAINTENANCE_OPCUA_PORT:-4848}/underhill/maintenance`
 - i3X endpoints start at: `http://127.0.0.1:${AIRLOCK_HTTP_PORT:-8080}/api/v1/namespaces`
 
 Optional env file:
@@ -235,6 +239,7 @@ flatpak-spawn --host /usr/bin/env bash -lc 'cd "/home/earthling/Documents/Focus/
   - `opc.tcp://127.0.0.1:4845/underhill/thermal`
   - `opc.tcp://127.0.0.1:4846/underhill/water`
   - `opc.tcp://127.0.0.1:4847/underhill/safety`
+  - `opc.tcp://127.0.0.1:4848/underhill/maintenance`
 - MQTT Explorer:
   - Set `UNS_MQTT_BROKER` (for example `mqtt://127.0.0.1:1883`)
   - Browse from topic root `murph/habitat/nodes/{node_id}/pea/`

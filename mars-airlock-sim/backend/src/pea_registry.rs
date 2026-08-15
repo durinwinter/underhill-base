@@ -16,6 +16,7 @@ pub const DEFAULT_POWER_PEA_ID: &str = "POWER-PEA-001";
 pub const DEFAULT_THERMAL_PEA_ID: &str = "THERMAL-PEA-001";
 pub const DEFAULT_WATER_PEA_ID: &str = "WATER-PEA-001";
 pub const DEFAULT_SAFETY_PEA_ID: &str = "SAFETY-PEA-001";
+pub const DEFAULT_MAINTENANCE_PEA_ID: &str = "ROBOTICS-PEA-001";
 
 pub const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
 pub const ECLSS_SERVICE_TAG: &str = "EclssService";
@@ -24,8 +25,9 @@ pub const POWER_SERVICE_TAG: &str = "PowerService";
 pub const THERMAL_SERVICE_TAG: &str = "ThermalService";
 pub const WATER_SERVICE_TAG: &str = "WaterService";
 pub const SAFETY_SERVICE_TAG: &str = "SafetyService";
+pub const MAINTENANCE_SERVICE_TAG: &str = "MaintenanceService";
 
-pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 7] = [
+pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 8] = [
     PeaDefinition {
         pea_id: DEFAULT_AIRLOCK_PEA_ID,
         pea_type: "AIRLOCK",
@@ -88,6 +90,15 @@ pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 7] = [
         namespace_uri: "urn:underhill:safety:mtp",
         endpoint_path: "/underhill/safety",
         root_path: "Objects/Underhill/SafetyPEA",
+    },
+    PeaDefinition {
+        pea_id: DEFAULT_MAINTENANCE_PEA_ID,
+        pea_type: "ROBOTICS_LOGISTICS",
+        name: "Underhill Robotics and Maintenance",
+        service_tag: MAINTENANCE_SERVICE_TAG,
+        namespace_uri: "urn:underhill:maintenance:mtp",
+        endpoint_path: "/underhill/maintenance",
+        root_path: "Objects/Underhill/MaintenancePEA",
     },
 ];
 

@@ -105,6 +105,17 @@ pub struct ReliabilityEvent {
     pub detail: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct EclssRepairRequest {
+    pub work_order_id: String,
+    pub component_id: String,
+    pub required_labor_hours: f64,
+    pub crew_technicians_required: f64,
+    pub robots_required: f64,
+    pub tool_id: String,
+    pub priority: u8,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EclssReliabilitySnapshot {
     pub schema_version: u32,
@@ -208,25 +219,7 @@ impl EclssReliabilityState {
         let dt_hours = dt_sec / 3_600.0;
         for component in &mut self.components {
             match component.condition {
-                ComponentCondition::Repairing => {
-                    component.repair_remaining_hours =
-                        (component.repair_remaining_hours - dt_hours).max(0.0);
-                    if component.repair_remaining_hours <= f64::EPSILON {
-                        component.condition = ComponentCondition::Operational;
-                        component.health_pct = 100.0;
-                        component.unit_operating_hours = 0.0;
-                        component.completed_repairs += 1;
-                        component.active_work_order = None;
-                        component.failure_exposure_remaining_hours =
-                            sample_failure_exposure(&mut self.rng_state, &component.profile);
-                        self.pending_events.push(ReliabilityEvent {
-                            event_kind: "repair_completed".to_string(),
-                            component_id: component.profile.component_id.clone(),
-                            work_order_id: None,
-                            detail: "replacement ORU returned to operational service".to_string(),
-                        });
-                    }
-                }
+                ComponentCondition::Repairing => {}
                 ComponentCondition::Operational | ComponentCondition::Degraded
                     if process_running =>
                 {
@@ -361,7 +354,7 @@ impl EclssReliabilityState {
         Ok(())
     }
 
-    pub fn start_repair(&mut self, component_id: &str) -> Result<String, String> {
+    pub fn start_repair(&mut self, component_id: &str) -> Result<EclssRepairRequest, String> {
         let sequence = self.next_work_order_sequence;
         let work_order_id = format!("eclss-wo-{sequence:06}");
         let reference_mttr_hours = {
@@ -391,7 +384,90 @@ impl EclssReliabilityState {
                 reference_mttr_hours
             ),
         });
-        Ok(work_order_id)
+        let (tool_id, priority) =
+            repair_dispatch_profile(self.component_mut(component_id)?.profile.function);
+        Ok(EclssRepairRequest {
+            work_order_id,
+            component_id: component_id.to_string(),
+            required_labor_hours: reference_mttr_hours,
+            crew_technicians_required: 1.0,
+            robots_required: 1.0,
+            tool_id: tool_id.to_string(),
+            priority,
+        })
+    }
+
+    pub fn apply_repair_labor(
+        &mut self,
+        work_order_id: &str,
+        component_id: &str,
+        labor_hours: f64,
+    ) -> Result<(), String> {
+        if !labor_hours.is_finite() || labor_hours <= 0.0 {
+            return Err("labor_hours must be finite and positive".to_string());
+        }
+        let index = self
+            .components
+            .iter()
+            .position(|component| component.profile.component_id == component_id)
+            .ok_or_else(|| format!("unknown ECLSS component: {component_id}"))?;
+        let completed = {
+            let component = &mut self.components[index];
+            if component.condition != ComponentCondition::Repairing {
+                return Err("component is not awaiting repair labor".to_string());
+            }
+            if component.active_work_order.as_deref() != Some(work_order_id) {
+                return Err("labor allocation does not match the active work order".to_string());
+            }
+            component.repair_remaining_hours =
+                (component.repair_remaining_hours - labor_hours).max(0.0);
+            component.repair_remaining_hours <= f64::EPSILON
+        };
+        if completed {
+            let profile = self.components[index].profile.clone();
+            let next_failure_exposure = sample_failure_exposure(&mut self.rng_state, &profile);
+            let component = &mut self.components[index];
+            component.condition = ComponentCondition::Operational;
+            component.health_pct = 100.0;
+            component.unit_operating_hours = 0.0;
+            component.completed_repairs += 1;
+            component.active_work_order = None;
+            component.failure_exposure_remaining_hours = next_failure_exposure;
+            self.pending_events.push(ReliabilityEvent {
+                event_kind: "repair_completed".to_string(),
+                component_id: component_id.to_string(),
+                work_order_id: Some(work_order_id.to_string()),
+                detail: "replacement ORU returned to operational service".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn cancel_pending_repair(
+        &mut self,
+        work_order_id: &str,
+        component_id: &str,
+    ) -> Result<(), String> {
+        let component = self.component_mut(component_id)?;
+        if component.condition != ComponentCondition::Repairing
+            || component.active_work_order.as_deref() != Some(work_order_id)
+        {
+            return Err("component does not match the active repair work order".to_string());
+        }
+        component.condition = ComponentCondition::Failed;
+        component.repair_remaining_hours = 0.0;
+        component.active_work_order = None;
+        component.spares_remaining = component
+            .spares_remaining
+            .checked_add(1)
+            .ok_or_else(|| "component spare inventory overflow".to_string())?;
+        self.pending_events.push(ReliabilityEvent {
+            event_kind: "repair_dispatch_cancelled".to_string(),
+            component_id: component_id.to_string(),
+            work_order_id: Some(work_order_id.to_string()),
+            detail: "repair handoff failed; reserved point-of-use spare was returned".to_string(),
+        });
+        Ok(())
     }
 
     pub fn add_spares(&mut self, component_id: &str, quantity: u32) -> Result<(), String> {
@@ -451,6 +527,15 @@ fn component_capacity(component: &EclssComponentRuntime) -> f64 {
         ComponentCondition::Operational => 1.0,
         ComponentCondition::Degraded => (component.health_pct / 100.0).clamp(0.05, 1.0),
         ComponentCondition::Failed | ComponentCondition::Repairing => 0.0,
+    }
+}
+
+fn repair_dispatch_profile(function: EclssFunction) -> (&'static str, u8) {
+    match function {
+        EclssFunction::OxygenGeneration => ("water_loop_service_kit", 100),
+        EclssFunction::CarbonDioxideRemoval => ("gas_loop_isolation_kit", 100),
+        EclssFunction::HumidityControl => ("water_loop_service_kit", 80),
+        EclssFunction::WaterRecovery => ("water_loop_service_kit", 90),
     }
 }
 
@@ -564,8 +649,10 @@ mod tests {
         state.inject_failure("oga_water_assembly_oru").unwrap();
         assert_eq!(state.snapshot().failed_count, 1);
         let work_order = state.start_repair("oga_water_assembly_oru").unwrap();
-        assert_eq!(work_order, "eclss-wo-000001");
-        state.step(4.2 * 3_600.0, true);
+        assert_eq!(work_order.work_order_id, "eclss-wo-000001");
+        state
+            .apply_repair_labor(&work_order.work_order_id, "oga_water_assembly_oru", 4.2)
+            .unwrap();
         let snapshot = state.snapshot();
         let oga = snapshot
             .components
@@ -584,14 +671,26 @@ mod tests {
         state
             .inject_failure("cdra_desiccant_adsorbent_assembly")
             .unwrap();
-        state
+        let work_order = state
             .start_repair("cdra_desiccant_adsorbent_assembly")
             .unwrap();
-        state.step(3_600.0, true);
+        state
+            .apply_repair_labor(
+                &work_order.work_order_id,
+                "cdra_desiccant_adsorbent_assembly",
+                1.0,
+            )
+            .unwrap();
         let encoded = serde_json::to_vec(&state).unwrap();
         let mut restored: EclssReliabilityState = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(restored.snapshot().repairing_count, 1);
-        restored.step(16.8 * 3_600.0, true);
+        restored
+            .apply_repair_labor(
+                &work_order.work_order_id,
+                "cdra_desiccant_adsorbent_assembly",
+                16.8,
+            )
+            .unwrap();
         assert_eq!(restored.snapshot().repairing_count, 0);
     }
 

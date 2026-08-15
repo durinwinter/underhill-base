@@ -220,7 +220,23 @@ Maintenance occurs while the plant continues operating. Redundancy, reduced capa
 
 ICES-2025-127 and its cited ISS Maintenance and Analysis Data Set (MADS) work are candidate calibration sources for OGS, CDRA, UPA, WPA, and Sabatier/CRS reliability. Before numbers enter the simulator, Underhill will preserve the source revision, population and exposure basis, component mapping, censoring assumptions, confidence bounds, and any transformation from reported MTBF/MTTR to a sampled hazard or repair-duration distribution. Published aggregate statistics must not be presented as raw MADS records, and ISS-era hardware values must remain configurable rather than being asserted as exact future Mars-base performance.
 
-The first reliability-data artifact is now implemented as a reviewed machine-readable representative-ORU table, source manifest, and provenance note. A seeded exponential sampler reproduces the configured constant-failure-rate mean within statistical tolerance; its state, active repairs, operating exposure, failure counts, and finite spare inventory survive checkpoint restart. Four initial ORUs physically affect OGA, CDRA, CCAA, and WPA functions. Missing logistics delays and Mars-specific configuration values are explicitly labeled Underhill assumptions rather than being filled with untraceable constants. Full reliability block diagrams, redundancy, uncertain distributions, crew/robot scheduling, tools, and shared spare logistics remain to be added.
+The first reliability-data artifact is now implemented as a reviewed machine-readable representative-ORU table, source manifest, and provenance note. A seeded exponential sampler reproduces the configured constant-failure-rate mean within statistical tolerance; its state, active repairs, operating exposure, failure counts, and finite spare inventory survive checkpoint restart. Four initial ORUs physically affect OGA, CDRA, CCAA, and WPA functions. Missing logistics delays and Mars-specific configuration values are explicitly labeled Underhill assumptions rather than being filled with untraceable constants.
+
+The first shared maintenance layer is also implemented. ECLSS repair requests enter a persistent priority queue owned by `ROBOTICS-PEA-001`; work advances only through allocated crew-technician and robot labor while the required tool, critical electrical power, and Maintenance PEA are available. Warehouse inventory is finite and explicitly dispatched to point-of-use stocks or received across an external logistics boundary. Work orders, tool reservations, inventories, lifecycle state, and repair progress survive restart. Full reliability block diagrams, redundant trains, uncertain repair distributions, access/isolation procedures, post-maintenance tests, and broader cross-PEA work demand remain follow-on work.
+
+### 8.2 External validation evidence hierarchy
+
+External datasets are assigned a narrow role before ingestion:
+
+| Evidence tier | Sources | Permitted Underhill use |
+| --- | --- | --- |
+| Direct control-loop/actuator evidence | DAMADICS, ISDB, SACAC | Fit or validate non-ideal valve response, stiction, sensor/actuator fault signatures, oscillation and poor-loop root-cause diagnosis for Airlock/ECLSS loops. Physical Mars pressure, flow, or failure-rate magnitudes still come from the native model. |
+| Cyber-physical/SCADA evidence | SWaT, WADI, BATADAL | Design held-out command, telemetry-integrity, replay, authority, and anomaly-detection campaigns across independent OPC UA-connected PEAs. Water-process topology may inform ECLSS structure but does not calibrate Mars chemistry directly. |
+| Structural simulator analogs | Tennessee Eastman Process, IndPenSim | Guide coupled-unit, fault-injection, controller, and labeled-scenario architecture for Sabatier/ECLSS. Their chemistry and process magnitudes are not copied. |
+| Degradation/RUL analogs | Naval propulsion CBM, NASA battery aging, FEMTO/PRONOSTIA, CWRU bearing | Shape labeled degradation, remaining-life, thermal/electrical aging, and rotating-machinery validation profiles after component wear models exist. |
+| Direct ECLSS reliability evidence | NASA ICES-2025-127 published MADS-derived tables | Preserve published aggregate ORU MTBF, MTTR, and K-factor fields with evidence labels and Mars-specific assumptions kept separate. |
+
+Combined-cycle power, wind-grid SCADA, grid-stability, and household energy corpora are deliberately excluded from physical calibration because their terrestrial AC-grid or appliance physics do not match an islanded Mars DC microgrid. Dataset manifests, license gates, checksums, deterministic transformations, held-out partitions, acceptance thresholds, and prohibited claims live under `validation/datasets/`.
 
 ## 9. Telemetry architecture
 

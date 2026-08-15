@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::eclss_reliability::{EclssReliabilitySnapshot, EclssReliabilityState, ReliabilityEvent};
+use crate::eclss_reliability::{
+    EclssReliabilitySnapshot, EclssReliabilityState, EclssRepairRequest, ReliabilityEvent,
+};
 
 const MARS_SOL_SEC: f64 = 88_775.244;
 
@@ -233,6 +235,7 @@ impl PowerSimulation {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         dt_sec: f64,
@@ -241,6 +244,7 @@ impl PowerSimulation {
         thermal_load_kw: f64,
         water_load_kw: f64,
         safety_load_kw: f64,
+        maintenance_load_kw: f64,
         sabatier_load_kw: f64,
         airlock_load_kw: f64,
     ) -> PowerSnapshot {
@@ -267,6 +271,7 @@ impl PowerSimulation {
             + thermal_load_kw.max(0.0)
             + water_load_kw.max(0.0)
             + safety_load_kw.max(0.0)
+            + maintenance_load_kw.max(0.0)
             + airlock_load_kw.max(0.0);
         self.flexible_load_kw = 8.0 + sabatier_load_kw.max(0.0);
         let battery_soc_pct = self.battery_soc_pct();
@@ -1152,8 +1157,30 @@ impl EclssSimulation {
             .inject_degradation(component_id, health_pct)
     }
 
-    pub fn start_component_repair(&mut self, component_id: &str) -> Result<String, String> {
+    pub fn start_component_repair(
+        &mut self,
+        component_id: &str,
+    ) -> Result<EclssRepairRequest, String> {
         self.reliability.start_repair(component_id)
+    }
+
+    pub fn apply_component_repair_labor(
+        &mut self,
+        work_order_id: &str,
+        component_id: &str,
+        labor_hours: f64,
+    ) -> Result<(), String> {
+        self.reliability
+            .apply_repair_labor(work_order_id, component_id, labor_hours)
+    }
+
+    pub fn cancel_component_repair(
+        &mut self,
+        work_order_id: &str,
+        component_id: &str,
+    ) -> Result<(), String> {
+        self.reliability
+            .cancel_pending_repair(work_order_id, component_id)
     }
 
     pub fn add_component_spares(
@@ -1307,7 +1334,7 @@ mod tests {
     fn power_balance_closes_each_step() {
         let mut power = PowerSimulation::new();
         for _ in 0..10_000 {
-            let snapshot = power.step(0.05, true, 12.0, 4.0, 4.5, 2.4, 5.0, 2.0);
+            let snapshot = power.step(0.05, true, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-9);
             assert!(snapshot.battery_energy_kwh >= 0.0);
             assert!(snapshot.battery_energy_kwh <= 500.0);
@@ -1319,7 +1346,7 @@ mod tests {
         let mut power = PowerSimulation::new();
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         let opening_energy = power.battery_energy_kwh;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
         assert_eq!(snapshot.solar_available_kw, 0.0);
         assert!(snapshot.battery_power_kw < 0.0);
         assert!(snapshot.battery_energy_kwh < opening_energy);
@@ -1332,7 +1359,7 @@ mod tests {
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         power.fission_capacity_kw = 0.0;
         power.battery_energy_kwh = 0.0;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
         assert!(snapshot.load_shed_active);
         assert_eq!(snapshot.flexible_load_kw, 13.0);
         assert_eq!(snapshot.requested_load_kw, snapshot.critical_load_kw);
@@ -1353,10 +1380,13 @@ mod tests {
         assert!(failed.alarm_maintenance_required);
         assert_eq!(failed.reliability.failed_count, 1);
 
-        eclss
+        let work_order = eclss
             .start_component_repair("oga_water_assembly_oru")
             .unwrap();
-        let repaired = eclss.step(4.2 * 3_600.0, true);
+        eclss
+            .apply_component_repair_labor(&work_order.work_order_id, "oga_water_assembly_oru", 4.2)
+            .unwrap();
+        let repaired = eclss.step(1.0, true);
         assert_eq!(repaired.reliability.failed_count, 0);
         assert_eq!(repaired.reliability.repairing_count, 0);
         assert!(repaired.o2_generation_kgph > 0.0);
@@ -1400,7 +1430,7 @@ mod tests {
     fn power_state_round_trip_preserves_energy_and_integrals() {
         let mut power = PowerSimulation::new();
         for _ in 0..100 {
-            power.step(1.0, true, 11.0, 4.0, 4.5, 2.4, 4.0, 1.0);
+            power.step(1.0, true, 11.0, 4.0, 4.5, 2.4, 1.5, 4.0, 1.0);
         }
         let restored: PowerSimulation =
             serde_json::from_slice(&serde_json::to_vec(&power).unwrap()).unwrap();

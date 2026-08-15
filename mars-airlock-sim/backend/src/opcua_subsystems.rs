@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     PeaRuntimeState,
+    maintenance::MaintenanceSimulation,
     subsystems::{
         EclssSimulation, PowerSimulation, SabatierSimulation, SafetySimulation, ThermalSimulation,
         WaterSimulation,
@@ -211,6 +212,23 @@ struct SafetyNodes {
     alarm_structural: NodeId,
 }
 
+#[derive(Clone)]
+struct MaintenanceNodes {
+    endpoint_url: NodeId,
+    security_mode: NodeId,
+    service_state: NodeId,
+    deployed: NodeId,
+    running: NodeId,
+    queued_work_orders: NodeId,
+    active_work_orders: NodeId,
+    blocked_work_orders: NodeId,
+    crew_available: NodeId,
+    robots_available: NodeId,
+    warehouse_spares_total: NodeId,
+    power_kw: NodeId,
+    service_available: NodeId,
+}
+
 pub fn spawn_eclss_opcua_server(
     sim: Arc<RwLock<EclssSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
@@ -333,6 +351,27 @@ pub fn spawn_safety_opcua_server(
     tokio::spawn(async move {
         if let Err(err) = run_safety_opcua_server(sim, runtime, config).await {
             error!("Safety OPC UA server exited with error: {err}");
+        }
+    });
+}
+
+pub fn spawn_maintenance_opcua_server(
+    sim: Arc<RwLock<MaintenanceSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    port: u16,
+    security_profile: String,
+) {
+    let config = SubsystemOpcuaConfig::new(
+        port,
+        "/underhill/maintenance",
+        "./pki/maintenance",
+        security_profile,
+        "Underhill Maintenance OPC UA Server",
+        "urn:underhill:maintenance:opcua-server",
+    );
+    tokio::spawn(async move {
+        if let Err(err) = run_maintenance_opcua_server(sim, runtime, config).await {
+            error!("Maintenance OPC UA server exited with error: {err}");
         }
     });
 }
@@ -1054,6 +1093,94 @@ async fn run_safety_opcua_server(
                 values.into_iter().map(|(node, value)| (node, None, value)),
             ) {
                 warn!("Failed updating Safety OPC UA values: {err}");
+            }
+        }
+    });
+    run_server(server, &config).await?;
+    handle.cancel();
+    let _ = sync_task.await;
+    Ok(())
+}
+
+async fn run_maintenance_opcua_server(
+    sim: Arc<RwLock<MaintenanceSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    config: SubsystemOpcuaConfig,
+) -> anyhow::Result<()> {
+    let namespace_uri = "urn:underhill:maintenance:mtp";
+    let (server, handle) = build_server(&config, namespace_uri)?;
+    let manager = handle
+        .node_managers()
+        .get_of_type::<SimpleNodeManager>()
+        .ok_or_else(|| anyhow::anyhow!("SimpleNodeManager not available for Maintenance"))?;
+    let ns = handle
+        .get_namespace_index(namespace_uri)
+        .ok_or_else(|| anyhow::anyhow!("Namespace index unavailable for Maintenance"))?;
+    let nodes = build_maintenance_address_space(ns, &manager);
+    let subscriptions = handle.subscriptions().clone();
+    let server_handle = handle.clone();
+    let endpoint_url = config.endpoint_url();
+    let security_profile = config.security_profile.clone();
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = server_handle.token().cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            let snapshot = sim.read().await.snapshot();
+            let runtime_state = *runtime.read().await;
+            let warehouse_total: u32 = snapshot.warehouse_spares.values().copied().sum();
+            let values = vec![
+                (
+                    &nodes.endpoint_url,
+                    DataValue::new_now(endpoint_url.clone()),
+                ),
+                (
+                    &nodes.security_mode,
+                    DataValue::new_now(security_profile.clone()),
+                ),
+                (
+                    &nodes.service_state,
+                    DataValue::new_now(state_for_runtime(runtime_state)),
+                ),
+                (&nodes.deployed, DataValue::new_now(runtime_state.deployed)),
+                (&nodes.running, DataValue::new_now(runtime_state.running)),
+                (
+                    &nodes.queued_work_orders,
+                    DataValue::new_now(snapshot.queued_work_orders as i32),
+                ),
+                (
+                    &nodes.active_work_orders,
+                    DataValue::new_now(snapshot.active_work_orders as i32),
+                ),
+                (
+                    &nodes.blocked_work_orders,
+                    DataValue::new_now(snapshot.blocked_work_orders as i32),
+                ),
+                (
+                    &nodes.crew_available,
+                    DataValue::new_now(snapshot.crew_technicians_available),
+                ),
+                (
+                    &nodes.robots_available,
+                    DataValue::new_now(snapshot.robots_available),
+                ),
+                (
+                    &nodes.warehouse_spares_total,
+                    DataValue::new_now(warehouse_total as i32),
+                ),
+                (&nodes.power_kw, DataValue::new_now(snapshot.power_kw)),
+                (
+                    &nodes.service_available,
+                    DataValue::new_now(snapshot.service_available),
+                ),
+            ];
+            if let Err(err) = manager.set_values(
+                &subscriptions,
+                values.into_iter().map(|(node, value)| (node, None, value)),
+            ) {
+                warn!("Failed updating Maintenance OPC UA values: {err}");
             }
         }
     });
@@ -2303,6 +2430,133 @@ fn build_safety_address_space(
         alarm_toxic_gas,
         alarm_radiation,
         alarm_structural,
+    }
+}
+
+fn build_maintenance_address_space(
+    ns: u16,
+    manager: &Arc<opcua::server::node_manager::memory::InMemoryNodeManager<SimpleNodeManagerImpl>>,
+) -> MaintenanceNodes {
+    let underhill = NodeId::new(ns, "Underhill");
+    let pea = NodeId::new(ns, "Underhill.MaintenancePEA");
+    let diagnostics = NodeId::new(ns, "Underhill.MaintenancePEA.Diagnostics");
+    let services = NodeId::new(ns, "Underhill.MaintenancePEA.Services");
+    let service = NodeId::new(ns, "Underhill.MaintenancePEA.Services.MaintenanceService");
+    let control = NodeId::new(
+        ns,
+        "Underhill.MaintenancePEA.Services.MaintenanceService.ServiceControl",
+    );
+    let data = NodeId::new(ns, "Underhill.MaintenancePEA.DataAssemblies");
+    let queue = NodeId::new(ns, "Underhill.MaintenancePEA.DataAssemblies.WorkQueue");
+    let resources = NodeId::new(ns, "Underhill.MaintenancePEA.DataAssemblies.Resources");
+    let inventory = NodeId::new(ns, "Underhill.MaintenancePEA.DataAssemblies.Inventory");
+    let mut space = manager.address_space().write();
+    space.add_folder(
+        &underhill,
+        "Underhill",
+        "Underhill",
+        &NodeId::objects_folder_id(),
+    );
+    space.add_folder(&pea, "MaintenancePEA", "MaintenancePEA", &underhill);
+    for (node, browse, parent) in [
+        (&diagnostics, "Diagnostics", &pea),
+        (&services, "Services", &pea),
+        (&service, "MaintenanceService", &services),
+        (&control, "ServiceControl", &service),
+        (&data, "DataAssemblies", &pea),
+        (&queue, "WorkQueue", &data),
+        (&resources, "Resources", &data),
+        (&inventory, "Inventory", &data),
+    ] {
+        space.add_folder(node, browse, browse, parent);
+    }
+    let node = |suffix: &str| NodeId::new(ns, format!("Underhill.MaintenancePEA.{suffix}"));
+    let endpoint_url = node("Diagnostics.EndpointUrl");
+    let security_mode = node("Diagnostics.SecurityMode");
+    let service_state = node("Services.MaintenanceService.ServiceControl.State");
+    let deployed = node("Services.MaintenanceService.ServiceControl.Deployed");
+    let running = node("Services.MaintenanceService.ServiceControl.Running");
+    let queued_work_orders = node("DataAssemblies.WorkQueue.QueuedWorkOrders");
+    let active_work_orders = node("DataAssemblies.WorkQueue.ActiveWorkOrders");
+    let blocked_work_orders = node("DataAssemblies.WorkQueue.BlockedWorkOrders");
+    let crew_available = node("DataAssemblies.Resources.CrewTechniciansAvailable");
+    let robots_available = node("DataAssemblies.Resources.RobotsAvailable");
+    let warehouse_spares_total = node("DataAssemblies.Inventory.WarehouseSparesTotal");
+    let power_kw = node("DataAssemblies.Resources.PowerKw");
+    let service_available = node("DataAssemblies.Resources.ServiceAvailable");
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &endpoint_url,
+        "EndpointUrl",
+        "",
+        false,
+    );
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &security_mode,
+        "SecurityMode",
+        "NONE",
+        false,
+    );
+    insert_var(&mut space, &control, &service_state, "State", "Idle", false);
+    insert_var(&mut space, &control, &deployed, "Deployed", true, false);
+    insert_var(&mut space, &control, &running, "Running", true, false);
+    for (id, browse) in [
+        (&queued_work_orders, "QueuedWorkOrders"),
+        (&active_work_orders, "ActiveWorkOrders"),
+        (&blocked_work_orders, "BlockedWorkOrders"),
+    ] {
+        insert_var(&mut space, &queue, id, browse, 0i32, false);
+    }
+    insert_var(
+        &mut space,
+        &resources,
+        &crew_available,
+        "CrewTechniciansAvailable",
+        0.0f64,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &resources,
+        &robots_available,
+        "RobotsAvailable",
+        0.0f64,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &inventory,
+        &warehouse_spares_total,
+        "WarehouseSparesTotal",
+        0i32,
+        false,
+    );
+    insert_var(&mut space, &resources, &power_kw, "PowerKw", 0.0f64, false);
+    insert_var(
+        &mut space,
+        &resources,
+        &service_available,
+        "ServiceAvailable",
+        false,
+        false,
+    );
+    MaintenanceNodes {
+        endpoint_url,
+        security_mode,
+        service_state,
+        deployed,
+        running,
+        queued_work_orders,
+        active_work_orders,
+        blocked_work_orders,
+        crew_available,
+        robots_available,
+        warehouse_spares_total,
+        power_kw,
+        service_available,
     }
 }
 
