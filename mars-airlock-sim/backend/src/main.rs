@@ -516,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
         safety_operator_state_value,
         maintenance_operator_state_value,
         environment_operator_state_value,
-        campaign_state,
+        mut campaign_state,
         plant_scheduler,
         plant_recovery,
     ) = match restored_checkpoint {
@@ -651,6 +651,7 @@ async fn main() -> anyhow::Result<()> {
     ] {
         reconcile_runtime_with_operator(runtime, operator_state, initial_transition_ms);
     }
+    campaign_state.prepare_after_restore();
     let sim = Arc::new(RwLock::new(airlock_state));
     let airlock_runtime = Arc::new(RwLock::new(airlock_runtime_state));
     let eclss_runtime = Arc::new(RwLock::new(eclss_runtime_state));
@@ -757,6 +758,7 @@ async fn main() -> anyhow::Result<()> {
     opcua_subsystems::spawn_water_opcua_server(
         water_sim.clone(),
         water_runtime.clone(),
+        campaigns.clone(),
         water_port,
         initial_security.clone(),
     );
@@ -1226,20 +1228,27 @@ fn spawn_simulation_task(
                     )
                 };
                 if scheduled.run_medium {
-                    context.campaigns.write().await.record_airlock_trace(
-                        scheduler.snapshot().plant_elapsed_sec,
-                        latest_airlock.equalize_valve_command_pct,
-                        latest_airlock.equalize_valve_pct,
-                        latest_airlock.equalize_valve_sensed_pct,
-                        latest_airlock.equalize_valve_residual_pct,
-                        latest_airlock.equalize_valve_stiction_active,
-                        latest_airlock.pressure_pa,
-                    );
-                    let campaign_actions = context
-                        .campaigns
-                        .write()
-                        .await
-                        .advance(scheduler.snapshot().plant_elapsed_sec);
+                    let (observed_water, campaign_actions) = {
+                        let mut campaigns = context.campaigns.write().await;
+                        let observed_water =
+                            campaigns.observed_water_snapshot(latest_water.clone());
+                        campaigns.record_airlock_trace(
+                            scheduler.snapshot().plant_elapsed_sec,
+                            latest_airlock.equalize_valve_command_pct,
+                            latest_airlock.equalize_valve_pct,
+                            latest_airlock.equalize_valve_sensed_pct,
+                            latest_airlock.equalize_valve_residual_pct,
+                            latest_airlock.equalize_valve_stiction_active,
+                            latest_airlock.pressure_pa,
+                        );
+                        campaigns.record_water_replay_trace(
+                            scheduler.snapshot().plant_elapsed_sec,
+                            &latest_water,
+                            &observed_water,
+                        );
+                        let actions = campaigns.advance(scheduler.snapshot().plant_elapsed_sec);
+                        (observed_water, actions)
+                    };
                     for action in campaign_actions {
                         let campaign_id = action.campaign_id().to_string();
                         if let Err(err) = apply_campaign_action(&context, action).await {
@@ -1263,7 +1272,7 @@ fn spawn_simulation_task(
                         scheduler.snapshot().plant_elapsed_sec,
                         latest_eclss.clone(),
                         latest_power.clone(),
-                        latest_water.clone(),
+                        observed_water,
                         latest_safety.clone(),
                         latest_maintenance.clone(),
                         latest_environment.clone(),
@@ -1300,7 +1309,9 @@ fn spawn_simulation_task(
                 sabatier_snapshot.expect("at least one fixed step was scheduled");
             let power_snapshot = power_snapshot.expect("at least one fixed step was scheduled");
             let thermal_snapshot = thermal_snapshot.expect("at least one fixed step was scheduled");
-            let water_snapshot = water_snapshot.expect("at least one fixed step was scheduled");
+            let water_snapshot = context.campaigns.read().await.observed_water_snapshot(
+                water_snapshot.expect("at least one fixed step was scheduled"),
+            );
             let safety_snapshot = safety_snapshot.expect("at least one fixed step was scheduled");
             let maintenance_snapshot =
                 maintenance_snapshot.expect("at least one fixed step was scheduled");
@@ -1794,6 +1805,18 @@ fn build_core_historian_samples(
             } else {
                 "normal"
             }),
+            quality: water_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.water_waste.00001.measured_value".to_string(),
+            value: json!((water.potable_conductivity_us_cm / 2_000.0).clamp(0.0, 1.0)),
+            quality: water_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.water_waste.00001.alarm_active".to_string(),
+            value: json!(water.alarm_water_quality),
             quality: water_quality,
             source: source.clone(),
         },
@@ -2139,7 +2162,16 @@ async fn api_thermal_snapshot(State(context): State<AppContext>) -> impl IntoRes
 }
 
 async fn api_water_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
-    axum::Json(context.water_sim.read().await.snapshot())
+    axum::Json(observed_water_snapshot(&context).await)
+}
+
+async fn observed_water_snapshot(context: &AppContext) -> WaterSnapshot {
+    let snapshot = context.water_sim.read().await.snapshot();
+    context
+        .campaigns
+        .read()
+        .await
+        .observed_water_snapshot(snapshot)
 }
 
 async fn api_safety_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
@@ -2372,13 +2404,25 @@ async fn api_get_campaign_trace(
             "campaign trace remains blinded until evaluation completes".to_string(),
         ));
     }
-    let total = campaign.trace_samples.len();
-    let items = campaign
-        .trace_samples
-        .iter()
+    let all_items = match campaign.template_id {
+        CampaignTemplateId::AirlockEqualizeStiction => campaign
+            .trace_samples
+            .iter()
+            .map(|sample| serde_json::to_value(sample).unwrap_or_else(|_| json!({})))
+            .collect::<Vec<_>>(),
+        CampaignTemplateId::WaterConductivityReplay => campaign
+            .water_replay_trace_samples
+            .iter()
+            .map(|sample| serde_json::to_value(sample).unwrap_or_else(|_| json!({})))
+            .collect::<Vec<_>>(),
+        CampaignTemplateId::SafetyCompoundLeakFire
+        | CampaignTemplateId::MaintenanceSharedToolContention => Vec::new(),
+    };
+    let total = all_items.len();
+    let items = all_items
+        .into_iter()
         .skip(offset)
         .take(limit)
-        .cloned()
         .collect::<Vec<_>>();
     let next_offset = (offset + items.len() < total).then_some(offset + items.len());
     Ok(axum::Json(json!({
@@ -2582,6 +2626,24 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                     }
                     json!({ "work_order_ids": work_order_ids })
                 }
+                CampaignTemplateId::WaterConductivityReplay => {
+                    let mut water = context.water_sim.write().await;
+                    let prior_target_us_cm = water.conductivity_contamination_target();
+                    let frozen_conductivity_us_cm = water.snapshot().potable_conductivity_us_cm;
+                    let physical_target_us_cm = ground_truth
+                        .get("physical_contamination_target_us_cm")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("campaign ground truth lacks contamination target")
+                        })?;
+                    water
+                        .set_conductivity_contamination_target(physical_target_us_cm)
+                        .map_err(anyhow::Error::msg)?;
+                    json!({
+                        "prior_contamination_target_us_cm": prior_target_us_cm,
+                        "frozen_conductivity_us_cm": frozen_conductivity_us_cm,
+                    })
+                }
             };
             context
                 .campaigns
@@ -2681,6 +2743,20 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                         .await;
                     }
                 }
+                CampaignTemplateId::WaterConductivityReplay => {
+                    let prior_target_us_cm = baseline
+                        .get("prior_contamination_target_us_cm")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("campaign baseline lacks contamination target")
+                        })?;
+                    context
+                        .water_sim
+                        .write()
+                        .await
+                        .set_conductivity_contamination_target(prior_target_us_cm)
+                        .map_err(anyhow::Error::msg)?;
+                }
             }
             journal_operation(
                 context,
@@ -2730,7 +2806,7 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
     let thermal_snapshot = context.thermal_sim.read().await.snapshot();
     let water_runtime = *context.water_runtime.read().await;
     let water_operator_state = context.water_operator_state.read().await.clone();
-    let water_snapshot = context.water_sim.read().await.snapshot();
+    let water_snapshot = observed_water_snapshot(&context).await;
     let safety_runtime = *context.safety_runtime.read().await;
     let safety_operator_state = context.safety_operator_state.read().await.clone();
     let safety_snapshot = context.safety_sim.read().await.snapshot();
@@ -2868,7 +2944,7 @@ async fn api_v1_get_pea(
         DEFAULT_WATER_PEA_ID => {
             let runtime_state = *context.water_runtime.read().await;
             let operator_state = context.water_operator_state.read().await.clone();
-            let snapshot = context.water_sim.read().await.snapshot();
+            let snapshot = observed_water_snapshot(&context).await;
             Ok(axum::Json(build_water_pea_descriptor(
                 &context,
                 &snapshot,
@@ -3064,7 +3140,7 @@ async fn api_v1_deploy_pea(
         }
         let runtime = *context.water_runtime.read().await;
         let operator_state = context.water_operator_state.read().await.clone();
-        let snap = context.water_sim.read().await.snapshot();
+        let snap = observed_water_snapshot(&context).await;
         publish_subsystem_uns(
             &context,
             DEFAULT_WATER_PEA_ID,
@@ -3948,7 +4024,7 @@ async fn current_subsystem_process_values(
         DEFAULT_SABATIER_PEA_ID => snapshot_value!(context.sabatier_sim.read().await.snapshot()),
         DEFAULT_POWER_PEA_ID => snapshot_value!(context.power_sim.read().await.snapshot()),
         DEFAULT_THERMAL_PEA_ID => snapshot_value!(context.thermal_sim.read().await.snapshot()),
-        DEFAULT_WATER_PEA_ID => snapshot_value!(context.water_sim.read().await.snapshot()),
+        DEFAULT_WATER_PEA_ID => snapshot_value!(observed_water_snapshot(context).await),
         DEFAULT_SAFETY_PEA_ID => snapshot_value!(context.safety_sim.read().await.snapshot()),
         DEFAULT_MAINTENANCE_PEA_ID => {
             snapshot_value!(context.maintenance_sim.read().await.snapshot())
@@ -3986,7 +4062,7 @@ async fn api_v1_i3x_list_peas(State(context): State<AppContext>) -> impl IntoRes
     let thermal_snapshot = context.thermal_sim.read().await.snapshot();
     let water_runtime = *context.water_runtime.read().await;
     let water_operator_state = context.water_operator_state.read().await.clone();
-    let water_snapshot = context.water_sim.read().await.snapshot();
+    let water_snapshot = observed_water_snapshot(&context).await;
     let safety_runtime = *context.safety_runtime.read().await;
     let safety_operator_state = context.safety_operator_state.read().await.clone();
     let safety_snapshot = context.safety_sim.read().await.snapshot();
@@ -4142,7 +4218,7 @@ async fn api_v1_i3x_get_pea(
     if pea_id == DEFAULT_WATER_PEA_ID {
         let runtime_state = *context.water_runtime.read().await;
         let operator_state = context.water_operator_state.read().await.clone();
-        let snapshot = context.water_sim.read().await.snapshot();
+        let snapshot = observed_water_snapshot(&context).await;
         return Ok(axum::Json(build_i3x_subsystem_descriptor(
             &context,
             DEFAULT_WATER_PEA_ID,
@@ -4549,7 +4625,7 @@ async fn api_v1_i3x_object_value(
     } else if element_id == DEFAULT_WATER_PEA_ID {
         let runtime_state = *context.water_runtime.read().await;
         let operator_state = context.water_operator_state.read().await.clone();
-        let snapshot = context.water_sim.read().await.snapshot();
+        let snapshot = observed_water_snapshot(&context).await;
         (
             build_water_pea_descriptor(&context, &snapshot, runtime_state, &operator_state),
             true,

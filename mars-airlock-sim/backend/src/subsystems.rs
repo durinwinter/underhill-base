@@ -586,6 +586,8 @@ pub struct WaterSimulation {
     cumulative_reclaimed_kg: f64,
     instantaneous_balance_error_kgph: f64,
     treatment_available: bool,
+    #[serde(default)]
+    injected_conductivity_target_us_cm: f64,
 }
 
 impl WaterSimulation {
@@ -617,6 +619,7 @@ impl WaterSimulation {
             cumulative_reclaimed_kg: 0.0,
             instantaneous_balance_error_kgph: 0.0,
             treatment_available: true,
+            injected_conductivity_target_us_cm: 0.0,
         }
     }
 
@@ -692,7 +695,9 @@ impl WaterSimulation {
         let circulation_factor = if self.treatment_available { 1.0 } else { 0.0 };
         self.potable_conductivity_us_cm = first_order(
             self.potable_conductivity_us_cm,
-            if self.treatment_available {
+            if self.injected_conductivity_target_us_cm > 0.0 {
+                self.injected_conductivity_target_us_cm
+            } else if self.treatment_available {
                 145.0
             } else {
                 620.0
@@ -765,6 +770,23 @@ impl WaterSimulation {
                 || self.potable_toc_mg_l > 2.0
                 || self.microbial_cfu_ml > 100.0,
         }
+    }
+
+    pub fn set_conductivity_contamination_target(
+        &mut self,
+        target_us_cm: f64,
+    ) -> Result<(), String> {
+        if !target_us_cm.is_finite() || !(0.0..=2_000.0).contains(&target_us_cm) {
+            return Err(
+                "conductivity contamination target must be finite and within 0..=2000".to_string(),
+            );
+        }
+        self.injected_conductivity_target_us_cm = target_us_cm;
+        Ok(())
+    }
+
+    pub fn conductivity_contamination_target(&self) -> f64 {
+        self.injected_conductivity_target_us_cm
     }
 
     pub fn mtp_nodes(&self) -> Vec<String> {
@@ -1510,6 +1532,26 @@ mod tests {
             assert!(snapshot.wastewater_kg >= 0.0);
             assert!(snapshot.brine_kg >= 0.0);
         }
+    }
+
+    #[test]
+    fn injected_conductivity_contamination_changes_physical_truth_and_persists() {
+        let mut water = WaterSimulation::new();
+        water.set_conductivity_contamination_target(850.0).unwrap();
+        for _ in 0..120 {
+            water.step(1.0, true, true, 0.5, 0.5);
+        }
+        let contaminated = water.snapshot();
+        assert!(contaminated.potable_conductivity_us_cm > 500.0);
+        assert!(contaminated.alarm_water_quality);
+
+        let restored: WaterSimulation =
+            serde_json::from_slice(&serde_json::to_vec(&water).unwrap()).unwrap();
+        assert_eq!(restored.conductivity_contamination_target(), 850.0);
+        assert_eq!(
+            restored.snapshot().potable_conductivity_us_cm,
+            contaminated.potable_conductivity_us_cm
+        );
     }
 
     #[test]

@@ -278,7 +278,7 @@ The fully formed target is budgeted across subsystem families as follows. These 
 | Cross-plant diagnostics and conservation | 8,000 | mass/energy ledgers, sensor residuals, KPIs, forecasts and model confidence |
 | **Total planning envelope** | **110,000** | adjustable as PEA designs become concrete |
 
-Implementation status: schema version 1 of this 110,000-tag catalog is now generated and validated at backend startup. Stable tag IDs and complete metadata are discoverable through paginated HTTP APIs, and capacity statistics distinguish the roughly 39,089 nominal publications per second from the 1.1 million samples per second implied by a naive all-tags-at-10-Hz design. Catalog presence is not counted as model-backed activation; each PEA must explicitly bind definitions to conserved state, sensors, quality evolution, commands, and alarms. Thirty-five Environment/ECLSS/Power/Water/Safety/Robotics tags are currently marked `model_backed` and archived at deterministic one-second plant-time boundaries with quality and provenance. Environment bindings preserve separate continuous truth and monitoring-quality semantics; Robotics bindings cover warehouse stock, tool capacity/reservations, work demand/state, and available/reserved crew and robots. A tag is promoted to `sensed` only after its observation/noise/fault path is distinct from internal truth.
+Implementation status: schema version 1 of this 110,000-tag catalog is now generated and validated at backend startup. Stable tag IDs and complete metadata are discoverable through paginated HTTP APIs, and capacity statistics distinguish the roughly 39,089 nominal publications per second from the 1.1 million samples per second implied by a naive all-tags-at-10-Hz design. Catalog presence is not counted as model-backed activation; each PEA must explicitly bind definitions to conserved state, sensors, quality evolution, commands, and alarms. Thirty-seven Environment/ECLSS/Power/Water/Safety/Robotics tags are currently marked `model_backed` and archived at deterministic one-second plant-time boundaries with quality and provenance. Environment bindings preserve separate continuous truth and monitoring-quality semantics; Water now includes a mediated observed-conductivity path distinct from protected physical truth; Robotics bindings cover warehouse stock, tool capacity/reservations, work demand/state, and available/reserved crew and robots. A tag is promoted to `sensed` only after its observation/noise/fault path is distinct from internal truth.
 
 At 110,000 tags, naive 10 Hz publication would produce 1.1 million samples per second and is neither realistic nor useful. The catalog assigns each tag an internal integration cadence, sensing cadence, publication class, deadband, event behavior, and retention policy. Fast protection and control values may run at 20-100 Hz internally; ordinary SCADA values commonly publish at 1 Hz or on change; inventory, wear, and forecast values publish much more slowly. WinCC OA receives operationally meaningful tags while high-rate component truth and waveforms can remain in specialized streams or validation forks.
 
@@ -317,6 +317,13 @@ qualification now proves that a stiction campaign actually exercised the actuato
 sub-breakaway, breakaway, and re-stick commands produce a paginated one-second trace and a versioned
 native qualification report. It is explicitly DAMADICS-informed rather than claimed as a held-out
 DAMADICS replay until source-file terms, checksums, transformations, and partitions are verified.
+
+The first native telemetry-integrity campaign now drives real potable-water conductivity upward
+while replaying a frozen nominal sensor value and suppressing its derived public alarm consistently
+across REST, UNS, i3X, OPC UA, WebSocket, and historian outputs. Protected truth/observation traces
+remain hidden during evaluation, survive restart, and are revealed through the paginated forensic
+trace API only after scoring. Physical contamination continues during telemetry compromise and
+recovers cyclically after the bounded injection is removed; the plant never resets or ends.
 
 - hard safety-envelope violations;
 - mass, energy, and inventory reconciliation error;

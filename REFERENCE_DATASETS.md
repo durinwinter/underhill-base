@@ -117,7 +117,12 @@ The Water PEA now supplies conserved potable, wastewater, brine, and discharge i
 power-dependent treatment, evolving water-quality indicators, alarms, persistence, and independent
 REST/UNS/OPC UA surfaces. This creates the native process on which SWaT/WADI/BATADAL-inspired
 campaigns can be translated. The campaign runner now applies a native compound hazard and scores
-agent observations, but no external attack trace has yet been imported or replayed.
+agent observations. A new `water_conductivity_replay` campaign separates protected process truth
+from public telemetry: deterministic contamination raises true conductivity and its true alarm while
+REST, UNS, i3X, OPC UA, WebSocket, and historian consumers receive a frozen nominal measurement and
+derived nominal alarm. The hidden paired trace and campaign state survive restart and are revealed
+only after completion. This is a native SWaT/WADI/BATADAL-informed attack mechanism; no external
+attack trace or source protocol has been imported or claimed as replayed.
 The public NASA ICES-2025-127 paper and file checksum are now verified. Four representative ORU
 rows from its published Tables 2, 8, 9, and 10 drive a deterministic, checkpointed constant-failure-
 rate model for oxygen generation, carbon-dioxide removal, humidity control, and water recovery.

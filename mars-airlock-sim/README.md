@@ -44,6 +44,7 @@ Standalone Underhill Base simulator with:
 - Checkpointed shared maintenance dispatch: ECLSS repairs progress only when allocated crew/robot labor, tools, critical power, and the Maintenance PEA are available
 - Historian-backed maintenance telemetry for warehouse stock, tool reservations, queue contention, crew, and robots with explicit quality states
 - Native `maintenance_shared_tool_contention` validation campaign for agent diagnosis and latency scoring against the live queue
+- Native `water_conductivity_replay` campaign with persistent physical contamination, cross-interface sensor replay, concealed derived alarm, and protected post-run forensic trace
 - Diagnostics and connected session reporting
 - ECLSS/Sabatier writeback lifecycle: `PENDING`, `APPLIED`, `SETTLING`, `COMPLETE`, `REJECTED`, `TIMED_OUT`
 
@@ -183,7 +184,7 @@ The catalog is a discoverable contract and capacity budget—not a claim that ev
 already backed by implemented dynamics. Activation maturity is tracked separately as PEAs
 graduate from planned definitions to sensed values.
 
-Thirty-five initial Environment, ECLSS, Power, Water, Safety, and Robotics definitions are explicitly marked `model_backed` and written at each
+Thirty-seven initial Environment, ECLSS, Power, Water, Safety, and Robotics definitions are explicitly marked `model_backed` and written at each
 simulated one-second boundary to `telemetry-history.ndjson`. Historian records contain monotonic
 durable sequence, stable tag ID, wall timestamp, continuous plant time, typed value, quality, and
 source-model identity. Startup recovers the bounded recent query window and continues the durable

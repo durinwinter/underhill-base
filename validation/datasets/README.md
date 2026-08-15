@@ -20,7 +20,8 @@ The backend test suite parses every JSON file in `manifests/` and rejects unsupp
 Initial manifests cover DAMADICS, ISDB, the SACAC PID repository, the SWaT/WADI/BATADAL security family, and NASA ICES-2025-127. DAMADICS supplies actuator fault signatures; ISDB focuses stiction behavior; SACAC supplies broader poor-loop root-cause labels; the security family defines held-out cyber-physical campaign shapes; ICES-2025-127 supplies published MADS-derived ECLSS aggregate reliability fields. None authorizes direct copying of terrestrial process magnitudes or unsupported flight-data claims into the Mars base.
 
 The live runner currently provides `airlock_equalize_stiction`,
-`safety_compound_leak_fire`, and `maintenance_shared_tool_contention` templates. These are
+`safety_compound_leak_fire`, `maintenance_shared_tool_contention`, and
+`water_conductivity_replay` templates. These are
 deterministic native Underhill campaigns tied to manifest IDs, not replays of raw source records.
 They run against the continuing plant clock, restore or remove their bounded injection inputs on
 completion, retain legitimate physical consequences, and produce a durable
@@ -43,3 +44,11 @@ landing page and data inventory have been verified, but the page does not publis
 file-level redistribution terms. Until terms, selected archive checksums, deterministic transforms,
 and held-out run identities are recorded, Underhill must not describe this result as raw-data replay,
 DAMADICS calibration, or held-out DAMADICS comparison.
+
+`water_conductivity_replay` injects a seed-varying physical conductivity target while the public
+sensor and its derived alarm replay their nominal baseline across every supported process-data
+surface. The protected one-second trace records true and observed values and alarms, then scores
+true excursion, observed flatness, peak divergence, and concealed-alarm duration using
+`contracts/underhill-water-conductivity-replay-v1.json`. Its evidence class is
+`underhill_native_swat_wadi_batadal_informed`: it validates Underhill's native telemetry-integrity
+path and does not claim source-protocol or raw-dataset replay.

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "contract_id": "underhill-water-conductivity-replay-v1",
+  "dataset_id": "swat-wadi-batadal-security-family",
+  "evidence_class": "underhill_native_swat_wadi_batadal_informed",
+  "source_artifact_sha256": null,
+  "sample_period_sec": 1.0,
+  "thresholds": {
+    "minimum_samples": 30,
+    "minimum_true_excursion_us_cm": 250.0,
+    "maximum_observed_excursion_us_cm": 1.0,
+    "minimum_peak_truth_observation_divergence_us_cm": 250.0,
+    "minimum_concealed_alarm_samples": 1
+  },
+  "claim_boundary": "This contract qualifies Underhill's native contamination-plus-sensor-replay pathway across its own telemetry interfaces. It is structurally informed by SWaT, WADI, and BATADAL but does not replay their process values, network protocols, or attack labels."
+}

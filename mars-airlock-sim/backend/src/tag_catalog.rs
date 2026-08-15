@@ -25,6 +25,8 @@ const MODEL_BACKED_TAG_IDS: &[&str] = &[
     "underhill.v1.water_waste.00000.alarm_active",
     "underhill.v1.water_waste.00000.quality_code",
     "underhill.v1.water_waste.00000.health_state",
+    "underhill.v1.water_waste.00001.measured_value",
+    "underhill.v1.water_waste.00001.alarm_active",
     "underhill.v1.safety_structure.00000.pressure",
     "underhill.v1.safety_structure.00000.sensor_residual",
     "underhill.v1.safety_structure.00000.alarm_active",
@@ -1051,8 +1053,8 @@ mod tests {
             catalog.stats.subsystem_counts["cross_plant_diagnostics"],
             8_000
         );
-        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_965);
-        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 35);
+        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_963);
+        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 37);
         let robotics_quantity = catalog
             .tags()
             .iter()

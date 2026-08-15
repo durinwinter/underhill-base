@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::OnceLock;
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
+use crate::subsystems::WaterSnapshot;
+
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -10,6 +12,7 @@ pub enum CampaignTemplateId {
     AirlockEqualizeStiction,
     SafetyCompoundLeakFire,
     MaintenanceSharedToolContention,
+    WaterConductivityReplay,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +42,30 @@ pub struct CampaignReport {
     pub best_correct_confidence: Option<f64>,
     pub observation_count: usize,
     pub trace_qualification: Option<TraceQualificationReport>,
+    pub water_replay_qualification: Option<WaterReplayQualificationReport>,
+    pub passed: bool,
+    pub failure_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaterReplayTraceSample {
+    pub plant_elapsed_sec: f64,
+    pub true_conductivity_us_cm: f64,
+    pub observed_conductivity_us_cm: f64,
+    pub true_alarm_water_quality: bool,
+    pub observed_alarm_water_quality: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaterReplayQualificationReport {
+    pub contract_id: String,
+    pub evidence_class: String,
+    pub dataset_id: String,
+    pub sample_count: usize,
+    pub true_excursion_us_cm: f64,
+    pub observed_excursion_us_cm: f64,
+    pub peak_truth_observation_divergence_us_cm: f64,
+    pub concealed_alarm_samples: usize,
     pub passed: bool,
     pub failure_reasons: Vec<String>,
 }
@@ -89,6 +116,27 @@ struct TraceQualificationThresholds {
     minimum_stiction_active_fraction: f64,
 }
 
+#[derive(Debug, Deserialize)]
+struct WaterReplayQualificationContract {
+    schema_version: u32,
+    contract_id: String,
+    dataset_id: String,
+    evidence_class: String,
+    source_artifact_sha256: Option<String>,
+    sample_period_sec: f64,
+    thresholds: WaterReplayQualificationThresholds,
+    claim_boundary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaterReplayQualificationThresholds {
+    minimum_samples: usize,
+    minimum_true_excursion_us_cm: f64,
+    maximum_observed_excursion_us_cm: f64,
+    minimum_peak_truth_observation_divergence_us_cm: f64,
+    minimum_concealed_alarm_samples: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationCampaign {
     pub schema_version: u32,
@@ -107,6 +155,8 @@ pub struct ValidationCampaign {
     pub observations: Vec<CampaignObservation>,
     #[serde(default)]
     pub trace_samples: Vec<AirlockValveTraceSample>,
+    #[serde(default)]
+    pub water_replay_trace_samples: Vec<WaterReplayTraceSample>,
     #[serde(default)]
     stimulus_stage: u8,
     pub report: Option<CampaignReport>,
@@ -180,6 +230,19 @@ impl Default for CampaignManager {
 }
 
 impl CampaignManager {
+    pub fn prepare_after_restore(&mut self) {
+        self.schema_version = CAMPAIGN_SCHEMA_VERSION;
+        self.next_campaign_sequence = self.next_campaign_sequence.max(
+            self.campaigns
+                .iter()
+                .filter_map(|campaign| campaign.campaign_id.strip_prefix("campaign-"))
+                .filter_map(|suffix| suffix.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+        );
+    }
+
     pub fn campaigns(&self) -> &[ValidationCampaign] {
         &self.campaigns
     }
@@ -198,9 +261,12 @@ impl CampaignManager {
         object.remove("pre_campaign_baseline");
         object.remove("stimulus_stage");
         object.remove("trace_samples");
+        object.remove("water_replay_trace_samples");
         object.insert(
             "trace_sample_count".to_string(),
-            serde_json::json!(campaign.trace_samples.len()),
+            serde_json::json!(
+                campaign.trace_samples.len() + campaign.water_replay_trace_samples.len()
+            ),
         );
         if matches!(
             campaign.status,
@@ -256,6 +322,14 @@ impl CampaignManager {
                 "airlock stiction trace campaigns require duration_sec within 35..=600".to_string(),
             );
         }
+        if request.template_id == CampaignTemplateId::WaterConductivityReplay
+            && !(60.0..=600.0).contains(&request.duration_sec)
+        {
+            return Err(
+                "water conductivity replay campaigns require duration_sec within 60..=600"
+                    .to_string(),
+            );
+        }
         let (dataset_id, target_pea, ground_truth) =
             template_metadata(request.template_id, request.seed);
         let onset = plant_elapsed_sec + request.fault_onset_delay_sec;
@@ -275,6 +349,7 @@ impl CampaignManager {
             pre_campaign_baseline: None,
             observations: Vec::new(),
             trace_samples: Vec::new(),
+            water_replay_trace_samples: Vec::new(),
             stimulus_stage: 0,
             report: None,
         };
@@ -348,6 +423,7 @@ impl CampaignManager {
             best_correct_confidence: None,
             observation_count: campaign.observations.len(),
             trace_qualification: None,
+            water_replay_qualification: None,
             passed: false,
             failure_reasons: vec![reason],
         });
@@ -404,6 +480,57 @@ impl CampaignManager {
                     stiction_active,
                     airlock_pressure_pa,
                 });
+            }
+        }
+    }
+
+    pub fn observed_water_snapshot(&self, mut snapshot: WaterSnapshot) -> WaterSnapshot {
+        if let Some(frozen_value) = self.campaigns.iter().find_map(|campaign| {
+            (campaign.status == CampaignStatus::Active
+                && campaign.template_id == CampaignTemplateId::WaterConductivityReplay)
+                .then(|| {
+                    campaign
+                        .pre_campaign_baseline
+                        .as_ref()
+                        .and_then(|baseline| baseline.get("frozen_conductivity_us_cm"))
+                        .and_then(Value::as_f64)
+                })
+                .flatten()
+        }) {
+            snapshot.potable_conductivity_us_cm = frozen_value;
+            snapshot.alarm_water_quality = snapshot.potable_conductivity_us_cm > 500.0
+                || snapshot.potable_toc_mg_l > 2.0
+                || snapshot.microbial_cfu_ml > 100.0;
+        }
+        snapshot
+    }
+
+    pub fn record_water_replay_trace(
+        &mut self,
+        plant_elapsed_sec: f64,
+        true_snapshot: &WaterSnapshot,
+        observed_snapshot: &WaterSnapshot,
+    ) {
+        if !plant_elapsed_sec.is_finite()
+            || !true_snapshot.potable_conductivity_us_cm.is_finite()
+            || !observed_snapshot.potable_conductivity_us_cm.is_finite()
+        {
+            return;
+        }
+        for campaign in &mut self.campaigns {
+            if campaign.status == CampaignStatus::Active
+                && campaign.template_id == CampaignTemplateId::WaterConductivityReplay
+                && plant_elapsed_sec >= campaign.fault_onset_plant_sec
+            {
+                campaign
+                    .water_replay_trace_samples
+                    .push(WaterReplayTraceSample {
+                        plant_elapsed_sec,
+                        true_conductivity_us_cm: true_snapshot.potable_conductivity_us_cm,
+                        observed_conductivity_us_cm: observed_snapshot.potable_conductivity_us_cm,
+                        true_alarm_water_quality: true_snapshot.alarm_water_quality,
+                        observed_alarm_water_quality: observed_snapshot.alarm_water_quality,
+                    });
             }
         }
     }
@@ -493,6 +620,7 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
         CampaignTemplateId::AirlockEqualizeStiction => 30.0,
         CampaignTemplateId::SafetyCompoundLeakFire => 15.0,
         CampaignTemplateId::MaintenanceSharedToolContention => 20.0,
+        CampaignTemplateId::WaterConductivityReplay => 15.0,
     };
     let mut failure_reasons = Vec::new();
     if latency.is_none() {
@@ -518,6 +646,19 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
     } else {
         None
     };
+    let water_replay_qualification =
+        if campaign.template_id == CampaignTemplateId::WaterConductivityReplay {
+            let report = qualify_water_replay_trace(&campaign.water_replay_trace_samples);
+            if !report.passed {
+                failure_reasons.push(
+                "physical/observed trace did not satisfy the native replay qualification contract"
+                    .to_string(),
+            );
+            }
+            Some(report)
+        } else {
+            None
+        };
     CampaignReport {
         expected_diagnosis: expected,
         first_correct_observation_sec: first,
@@ -525,9 +666,100 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
         best_correct_confidence: best_confidence,
         observation_count: campaign.observations.len(),
         trace_qualification,
+        water_replay_qualification,
         passed: failure_reasons.is_empty(),
         failure_reasons,
     }
+}
+
+fn qualify_water_replay_trace(
+    samples: &[WaterReplayTraceSample],
+) -> WaterReplayQualificationReport {
+    let contract = water_replay_qualification_contract();
+    let thresholds = &contract.thresholds;
+    let range = |values: Vec<f64>| {
+        let minimum = values.iter().copied().min_by(f64::total_cmp).unwrap_or(0.0);
+        let maximum = values.iter().copied().max_by(f64::total_cmp).unwrap_or(0.0);
+        maximum - minimum
+    };
+    let true_excursion_us_cm = range(
+        samples
+            .iter()
+            .map(|sample| sample.true_conductivity_us_cm)
+            .collect(),
+    );
+    let observed_excursion_us_cm = range(
+        samples
+            .iter()
+            .map(|sample| sample.observed_conductivity_us_cm)
+            .collect(),
+    );
+    let peak_truth_observation_divergence_us_cm = samples
+        .iter()
+        .map(|sample| (sample.true_conductivity_us_cm - sample.observed_conductivity_us_cm).abs())
+        .max_by(f64::total_cmp)
+        .unwrap_or(0.0);
+    let concealed_alarm_samples = samples
+        .iter()
+        .filter(|sample| sample.true_alarm_water_quality && !sample.observed_alarm_water_quality)
+        .count();
+    let mut failure_reasons = Vec::new();
+    if samples.len() < thresholds.minimum_samples {
+        failure_reasons.push(format!(
+            "fewer than {} one-second replay samples",
+            thresholds.minimum_samples
+        ));
+    }
+    if true_excursion_us_cm < thresholds.minimum_true_excursion_us_cm {
+        failure_reasons.push(format!(
+            "true conductivity excursion below {:.0} uS/cm",
+            thresholds.minimum_true_excursion_us_cm
+        ));
+    }
+    if observed_excursion_us_cm > thresholds.maximum_observed_excursion_us_cm {
+        failure_reasons.push(format!(
+            "replayed conductivity changed by more than {:.0} uS/cm",
+            thresholds.maximum_observed_excursion_us_cm
+        ));
+    }
+    if peak_truth_observation_divergence_us_cm
+        < thresholds.minimum_peak_truth_observation_divergence_us_cm
+    {
+        failure_reasons.push(format!(
+            "truth/observation divergence below {:.0} uS/cm",
+            thresholds.minimum_peak_truth_observation_divergence_us_cm
+        ));
+    }
+    if concealed_alarm_samples < thresholds.minimum_concealed_alarm_samples {
+        failure_reasons.push("no physically active water-quality alarm was concealed".to_string());
+    }
+    WaterReplayQualificationReport {
+        contract_id: contract.contract_id.clone(),
+        evidence_class: contract.evidence_class.clone(),
+        dataset_id: contract.dataset_id.clone(),
+        sample_count: samples.len(),
+        true_excursion_us_cm,
+        observed_excursion_us_cm,
+        peak_truth_observation_divergence_us_cm,
+        concealed_alarm_samples,
+        passed: failure_reasons.is_empty(),
+        failure_reasons,
+    }
+}
+
+fn water_replay_qualification_contract() -> &'static WaterReplayQualificationContract {
+    static CONTRACT: OnceLock<WaterReplayQualificationContract> = OnceLock::new();
+    CONTRACT.get_or_init(|| {
+        let contract: WaterReplayQualificationContract = serde_json::from_str(include_str!(
+            "../../../validation/datasets/contracts/underhill-water-conductivity-replay-v1.json"
+        ))
+        .expect("embedded water replay qualification contract must parse");
+        assert_eq!(contract.schema_version, 1);
+        assert_eq!(contract.sample_period_sec, 1.0);
+        assert!(contract.source_artifact_sha256.is_none());
+        assert!(!contract.claim_boundary.trim().is_empty());
+        contract
+    })
 }
 
 fn qualify_airlock_stiction_trace(samples: &[AirlockValveTraceSample]) -> TraceQualificationReport {
@@ -654,6 +886,17 @@ fn template_metadata(
                 "required_tool": "water_loop_service_kit",
                 "injected_work_orders": 2,
                 "available_tools": 1
+            }),
+        ),
+        CampaignTemplateId::WaterConductivityReplay => (
+            "swat-wadi-batadal-security-family",
+            "WATER-PEA-001",
+            serde_json::json!({
+                "expected_diagnosis": "potable_conductivity_sensor_replay",
+                "signal": "potable_conductivity_us_cm",
+                "physical_contamination_target_us_cm": 800.0 + (seed % 5) as f64 * 25.0,
+                "trace_contract_id": "underhill-water-conductivity-replay-v1",
+                "evidence_class": "underhill_native_swat_wadi_batadal_informed"
             }),
         ),
     }
@@ -913,5 +1156,63 @@ mod tests {
         assert!(view.get("template_id").is_none());
         assert!(view.get("observations").is_none());
         assert!(view.get("pre_campaign_baseline").is_none());
+    }
+
+    #[test]
+    fn water_replay_scores_hidden_truth_against_frozen_observation() {
+        let mut manager = CampaignManager::default();
+        let campaign = manager
+            .create(
+                CreateCampaignRequest {
+                    template_id: CampaignTemplateId::WaterConductivityReplay,
+                    seed: 12,
+                    fault_onset_delay_sec: 2.0,
+                    duration_sec: 60.0,
+                },
+                100.0,
+            )
+            .unwrap();
+        manager.advance(102.0);
+        manager
+            .set_baseline(
+                &campaign.campaign_id,
+                serde_json::json!({
+                    "prior_contamination_target_us_cm": 0.0,
+                    "frozen_conductivity_us_cm": 145.0
+                }),
+            )
+            .unwrap();
+        manager
+            .submit_observation(
+                &campaign.campaign_id,
+                SubmitObservationRequest {
+                    agent_id: "water-security-agent".to_string(),
+                    diagnosis: "potable conductivity sensor replay".to_string(),
+                    confidence: 0.91,
+                    evidence: vec!["cross-sensor inconsistency".to_string()],
+                    recommendation: Some("isolate telemetry channel".to_string()),
+                },
+                112.0,
+            )
+            .unwrap();
+        for index in 0..60 {
+            let mut truth = crate::subsystems::WaterSimulation::new().snapshot();
+            truth.potable_conductivity_us_cm = 145.0 + index as f64 * 10.0;
+            truth.alarm_water_quality = truth.potable_conductivity_us_cm > 500.0;
+            let observed = manager.observed_water_snapshot(truth.clone());
+            manager.record_water_replay_trace(102.0 + index as f64, &truth, &observed);
+        }
+        manager.advance(162.0);
+        let report = manager
+            .get(&campaign.campaign_id)
+            .unwrap()
+            .report
+            .as_ref()
+            .unwrap();
+        assert!(report.passed);
+        let replay = report.water_replay_qualification.as_ref().unwrap();
+        assert!(replay.passed);
+        assert_eq!(replay.observed_excursion_us_cm, 0.0);
+        assert!(replay.concealed_alarm_samples > 0);
     }
 }

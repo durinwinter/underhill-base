@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     PeaRuntimeState,
+    campaign::CampaignManager,
     environment::EnvironmentSimulation,
     maintenance::MaintenanceSimulation,
     subsystems::{
@@ -342,6 +343,7 @@ pub fn spawn_thermal_opcua_server(
 pub fn spawn_water_opcua_server(
     sim: Arc<RwLock<WaterSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
+    campaigns: Arc<RwLock<CampaignManager>>,
     port: u16,
     security_profile: String,
 ) {
@@ -354,7 +356,7 @@ pub fn spawn_water_opcua_server(
         "urn:underhill:water:opcua-server",
     );
     tokio::spawn(async move {
-        if let Err(err) = run_water_opcua_server(sim, runtime, config).await {
+        if let Err(err) = run_water_opcua_server(sim, runtime, campaigns, config).await {
             error!("Water OPC UA server exited with error: {err}");
         }
     });
@@ -893,6 +895,7 @@ async fn run_thermal_opcua_server(
 async fn run_water_opcua_server(
     sim: Arc<RwLock<WaterSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
+    campaigns: Arc<RwLock<CampaignManager>>,
     config: SubsystemOpcuaConfig,
 ) -> anyhow::Result<()> {
     let namespace_uri = "urn:underhill:water:mtp";
@@ -916,7 +919,10 @@ async fn run_water_opcua_server(
                 _ = server_handle.token().cancelled() => break,
                 _ = interval.tick() => {}
             }
-            let snapshot = sim.read().await.snapshot();
+            let snapshot = {
+                let snapshot = sim.read().await.snapshot();
+                campaigns.read().await.observed_water_snapshot(snapshot)
+            };
             let runtime_state = *runtime.read().await;
             let values = vec![
                 (
