@@ -911,6 +911,24 @@ impl Simulation {
         Ok(())
     }
 
+    pub fn valve_fault_settings(&self, valve: &str) -> Result<ValveFaultUpdateRequest, String> {
+        let (canonical_name, dynamics) = match valve.trim().to_ascii_lowercase().as_str() {
+            "equalize" | "equalization" | "equalize_valve" => {
+                ("equalize", &self.equalize_valve_dynamics)
+            }
+            "vent" | "vent_valve" => ("vent", &self.vent_valve_dynamics),
+            _ => return Err("Unknown valve. Use equalize or vent".to_string()),
+        };
+        Ok(ValveFaultUpdateRequest {
+            valve: canonical_name.to_string(),
+            stiction_breakaway_pct: Some(dynamics.stiction_breakaway_pct),
+            sensor_bias_pct: Some(dynamics.sensor_bias_pct),
+            max_travel_rate_pct_per_sec: Some(dynamics.max_travel_rate_pct_per_sec),
+            hard_stuck: Some(dynamics.hard_stuck),
+            leakage_pct: Some(dynamics.leakage_pct),
+        })
+    }
+
     fn update_alarms(&mut self) {
         self.alarms.high_pressure_alarm_active = self.pressure_pa > self.high_pressure_alarm_pa;
         self.alarms.low_pressure_alarm_active = self.pressure_pa < self.low_pressure_alarm_pa;

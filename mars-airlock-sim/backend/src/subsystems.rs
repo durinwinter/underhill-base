@@ -803,6 +803,13 @@ pub struct SafetySimulation {
     safety_power_kw: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SafetyHazardSettings {
+    pub injected_leak_kg_s: f64,
+    pub fire_source_kw: f64,
+    pub habitat_isolated: bool,
+}
+
 impl SafetySimulation {
     pub fn new() -> Self {
         let habitat_volume_m3 = 600.0;
@@ -953,6 +960,14 @@ impl SafetySimulation {
             self.habitat_isolated = value;
         }
         Ok(())
+    }
+
+    pub fn hazard_settings(&self) -> SafetyHazardSettings {
+        SafetyHazardSettings {
+            injected_leak_kg_s: self.injected_leak_kg_s,
+            fire_source_kw: self.fire_source_kw,
+            habitat_isolated: self.habitat_isolated,
+        }
     }
 
     pub fn snapshot(&self) -> SafetySnapshot {

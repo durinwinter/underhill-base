@@ -111,12 +111,13 @@ They may be reconsidered only for a narrowly documented algorithmic test that do
 6. Add ECLSS reliability and battery/bearing degradation manifests as their PEAs become physically modeled.
 7. Record every dataset-derived parameter set and campaign identifier in checkpoints, historian metadata, and evaluation reports.
 
-Current implementation status: the Airlock equalization and vent valves now provide deterministic lag, travel-rate limiting, deadband, breakaway stiction, leakage, sensor bias, and hard-stuck behavior with commanded/true/sensed/residual telemetry. Hysteresis, stochastic noise, dataset manifests, parameter fitting, and held-out comparison metrics remain to be implemented before claiming DAMADICS or ISDB calibration.
+Current implementation status: the Airlock equalization and vent valves now provide deterministic lag, travel-rate limiting, deadband, breakaway stiction, leakage, sensor bias, and hard-stuck behavior with commanded/true/sensed/residual telemetry. Versioned DAMADICS, ISDB, SACAC, and SWaT/WADI/BATADAL manifests plus a plant-time campaign runner now exist. The first templates exercise Airlock equalization-valve stiction and a compound habitat leak/fire diagnosis. Campaign schedules, ground truth, observations, reports, and exact pre-campaign input baselines survive checkpoint restart. Hysteresis, stochastic noise, raw-source verification, parameter fitting, and held-out trace comparison remain necessary before claiming DAMADICS or ISDB calibration.
 
 The Water PEA now supplies conserved potable, wastewater, brine, and discharge inventories,
 power-dependent treatment, evolving water-quality indicators, alarms, persistence, and independent
 REST/UNS/OPC UA surfaces. This creates the native process on which SWaT/WADI/BATADAL-inspired
-campaigns can be translated, but no external attack trace has yet been imported or replayed.
+campaigns can be translated. The campaign runner now applies a native compound hazard and scores
+agent observations, but no external attack trace has yet been imported or replayed.
 Similarly, ECLSS reliability sources are cataloged but have not yet been converted into sampled
 failure/repair distributions; the present ECLSS dynamics should not be described as MADS-calibrated.
 

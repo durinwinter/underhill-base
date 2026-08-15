@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::{
     PeaRuntimeState, SubsystemOperatorState,
+    campaign::CampaignManager,
     plant_runtime::PlantSchedulerState,
     sim::Simulation,
     subsystems::{
@@ -67,6 +68,8 @@ pub struct PlantCheckpoint {
     pub water_operator_state: SubsystemOperatorState,
     #[serde(default)]
     pub safety_operator_state: SubsystemOperatorState,
+    #[serde(default)]
+    pub campaigns: CampaignManager,
 }
 
 impl PlantCheckpoint {
@@ -95,6 +98,7 @@ impl PlantCheckpoint {
         thermal_operator_state: SubsystemOperatorState,
         water_operator_state: SubsystemOperatorState,
         safety_operator_state: SubsystemOperatorState,
+        campaigns: CampaignManager,
     ) -> Self {
         Self {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
@@ -122,6 +126,7 @@ impl PlantCheckpoint {
             thermal_operator_state,
             water_operator_state,
             safety_operator_state,
+            campaigns,
         }
     }
 
@@ -557,6 +562,7 @@ mod tests {
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
+            CampaignManager::default(),
         )
     }
 

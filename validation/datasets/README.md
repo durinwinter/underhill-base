@@ -17,4 +17,10 @@ The backend test suite parses every JSON file in `manifests/` and rejects unsupp
 
 `source_supplied` means the project has a user-provided canonical-looking location but has not yet completed independent terms/file verification. `source_verified` means the publisher/repository provenance is verified; it does not mean raw-file licensing or integrity checks are complete.
 
-Initial manifests cover DAMADICS, ISDB, and the SACAC PID repository. DAMADICS supplies actuator fault signatures; ISDB focuses stiction behavior; SACAC supplies broader poor-loop root-cause labels. None authorizes direct copying of chemical-process magnitudes into the Mars base.
+Initial manifests cover DAMADICS, ISDB, the SACAC PID repository, and the SWaT/WADI/BATADAL security family. DAMADICS supplies actuator fault signatures; ISDB focuses stiction behavior; SACAC supplies broader poor-loop root-cause labels; the security family defines held-out cyber-physical campaign shapes. None authorizes direct copying of terrestrial process magnitudes or protocol claims into the Mars base.
+
+The live runner currently provides `airlock_equalize_stiction` and
+`safety_compound_leak_fire` templates. These are deterministic native Underhill campaigns tied to
+manifest IDs, not replays of raw source records. They run against the continuing plant clock,
+restore their bounded injection inputs on completion, retain physical consequences, and produce a
+durable diagnosis/latency/confidence report.

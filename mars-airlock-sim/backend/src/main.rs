@@ -1,3 +1,4 @@
+mod campaign;
 #[cfg(test)]
 mod dataset_manifest;
 mod historian;
@@ -53,6 +54,10 @@ use tower_http::{
 use tracing::{error, info, warn};
 use zenoh::Session;
 
+use crate::campaign::{
+    CampaignAction, CampaignManager, CampaignTemplateId, CreateCampaignRequest,
+    SubmitObservationRequest,
+};
 use crate::historian::{Historian, NewHistorianSample, TelemetryQuality};
 use crate::pea_registry::{
     ALL_PEA_DEFINITIONS, DEFAULT_AIRLOCK_PEA_ID, DEFAULT_ECLSS_PEA_ID, DEFAULT_POWER_PEA_ID,
@@ -67,8 +72,8 @@ use crate::plant_runtime::{
 use crate::sim::Simulation;
 use crate::subsystems::{
     EclssSimulation, EclssSnapshot, PowerSimulation, PowerSnapshot, SabatierSimulation,
-    SabatierSnapshot, SafetySimulation, SafetySnapshot, ThermalSimulation, ThermalSnapshot,
-    WaterSimulation, WaterSnapshot,
+    SabatierSnapshot, SafetyHazardSettings, SafetySimulation, SafetySnapshot, ThermalSimulation,
+    ThermalSnapshot, WaterSimulation, WaterSnapshot,
 };
 use crate::tag_catalog::{CanonicalTag, TagCatalog};
 
@@ -148,6 +153,7 @@ struct AppContext {
     thermal_sim: Arc<RwLock<ThermalSimulation>>,
     water_sim: Arc<RwLock<WaterSimulation>>,
     safety_sim: Arc<RwLock<SafetySimulation>>,
+    campaigns: Arc<RwLock<CampaignManager>>,
     pea_opcua_endpoints: Arc<HashMap<String, String>>,
     zenoh_session: Option<Arc<Session>>,
     mqtt_uns: Option<Arc<mqtt_uns::MqttUnsPublisher>>,
@@ -436,6 +442,7 @@ async fn main() -> anyhow::Result<()> {
         thermal_operator_state_value,
         water_operator_state_value,
         safety_operator_state_value,
+        campaign_state,
         plant_scheduler,
         plant_recovery,
     ) = match restored_checkpoint {
@@ -495,6 +502,7 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.thermal_operator_state,
                 checkpoint.water_operator_state,
                 checkpoint.safety_operator_state,
+                checkpoint.campaigns,
                 scheduler,
                 PlantRecoveryStatus {
                     restored_from_checkpoint: true,
@@ -527,6 +535,7 @@ async fn main() -> anyhow::Result<()> {
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
+            CampaignManager::default(),
             PlantScheduler::new(plant_runtime_config),
             PlantRecoveryStatus {
                 restored_from_checkpoint: false,
@@ -568,6 +577,7 @@ async fn main() -> anyhow::Result<()> {
     let thermal_sim = Arc::new(RwLock::new(thermal_state));
     let water_sim = Arc::new(RwLock::new(water_state));
     let safety_sim = Arc::new(RwLock::new(safety_state));
+    let campaigns = Arc::new(RwLock::new(campaign_state));
     let tag_catalog = Arc::new(TagCatalog::full_base());
     tag_catalog
         .validate()
@@ -669,6 +679,7 @@ async fn main() -> anyhow::Result<()> {
         thermal_sim,
         water_sim,
         safety_sim,
+        campaigns,
         pea_opcua_endpoints,
         zenoh_session,
         mqtt_uns,
@@ -699,6 +710,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/water/snapshot", get(api_water_snapshot))
         .route("/api/v1/safety/snapshot", get(api_safety_snapshot))
         .route("/api/v1/safety/hazards", post(api_set_safety_hazards))
+        .route(
+            "/api/v1/validation/campaigns",
+            get(api_list_campaigns).post(api_create_campaign),
+        )
+        .route(
+            "/api/v1/validation/campaigns/{campaign_id}",
+            get(api_get_campaign),
+        )
+        .route(
+            "/api/v1/validation/campaigns/{campaign_id}/observations",
+            post(api_submit_campaign_observation),
+        )
         .route("/api/v1/telemetry/catalog", get(api_telemetry_catalog))
         .route("/api/v1/telemetry/stats", get(api_telemetry_stats))
         .route("/api/v1/telemetry/history", get(api_telemetry_history))
@@ -990,6 +1013,16 @@ fn spawn_simulation_task(
                     )
                 };
                 if scheduled.run_medium {
+                    let campaign_actions = context
+                        .campaigns
+                        .write()
+                        .await
+                        .advance(scheduler.snapshot().plant_elapsed_sec);
+                    for action in campaign_actions {
+                        if let Err(err) = apply_campaign_action(&context, action).await {
+                            error!("Failed to apply validation campaign action: {err:#}");
+                        }
+                    }
                     historian_frames.push((
                         scheduler.snapshot().plant_elapsed_sec,
                         latest_eclss.clone(),
@@ -1459,6 +1492,7 @@ async fn capture_plant_checkpoint(
         context.thermal_operator_state.read().await.clone(),
         context.water_operator_state.read().await.clone(),
         context.safety_operator_state.read().await.clone(),
+        context.campaigns.read().await.clone(),
     ))
 }
 
@@ -1644,6 +1678,179 @@ async fn api_set_safety_hazards(
     )
     .await;
     Ok(axum::Json(snapshot))
+}
+
+async fn api_list_campaigns(State(context): State<AppContext>) -> impl IntoResponse {
+    let campaigns = context.campaigns.read().await.campaigns().to_vec();
+    axum::Json(json!({
+        "schema_version": campaign::CAMPAIGN_SCHEMA_VERSION,
+        "count": campaigns.len(),
+        "items": campaigns,
+    }))
+}
+
+async fn api_get_campaign(
+    State(context): State<AppContext>,
+    Path(campaign_id): Path<String>,
+) -> Result<axum::Json<campaign::ValidationCampaign>, (StatusCode, String)> {
+    context
+        .campaigns
+        .read()
+        .await
+        .get(&campaign_id)
+        .cloned()
+        .map(axum::Json)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("campaign not found: {campaign_id}"),
+            )
+        })
+}
+
+async fn api_create_campaign(
+    State(context): State<AppContext>,
+    axum::Json(request): axum::Json<CreateCampaignRequest>,
+) -> Result<(StatusCode, axum::Json<campaign::ValidationCampaign>), (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
+    let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
+    let campaign = context
+        .campaigns
+        .write()
+        .await
+        .create(request, plant_elapsed_sec)
+        .map_err(|error| {
+            let status = if error.contains("only one fault campaign") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, error)
+        })?;
+    journal_operation(
+        &context,
+        "validation_campaign_scheduled",
+        campaign.campaign_id.clone(),
+        serde_json::to_value(&campaign).unwrap_or_else(|_| json!({})),
+    )
+    .await;
+    Ok((StatusCode::CREATED, axum::Json(campaign)))
+}
+
+async fn api_submit_campaign_observation(
+    State(context): State<AppContext>,
+    Path(campaign_id): Path<String>,
+    axum::Json(request): axum::Json<SubmitObservationRequest>,
+) -> Result<axum::Json<campaign::ValidationCampaign>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
+    let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
+    let campaign = context
+        .campaigns
+        .write()
+        .await
+        .submit_observation(&campaign_id, request, plant_elapsed_sec)
+        .map_err(|error| {
+            let status = if error.starts_with("campaign not found") {
+                StatusCode::NOT_FOUND
+            } else if error.contains("no longer accepts") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, error)
+        })?;
+    journal_operation(
+        &context,
+        "validation_observation_submitted",
+        campaign_id,
+        json!({
+            "observation_count": campaign.observations.len(),
+            "plant_elapsed_sec": plant_elapsed_sec,
+        }),
+    )
+    .await;
+    Ok(axum::Json(campaign))
+}
+
+async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> anyhow::Result<()> {
+    match action {
+        CampaignAction::Activate {
+            campaign_id,
+            template_id,
+        } => {
+            let baseline = match template_id {
+                CampaignTemplateId::AirlockEqualizeStiction => {
+                    let mut sim = context.sim.write().await;
+                    let baseline = sim
+                        .valve_fault_settings("equalize")
+                        .map_err(anyhow::Error::msg)?;
+                    let mut injected = baseline.clone();
+                    injected.stiction_breakaway_pct = Some(18.0);
+                    sim.set_valve_fault(injected).map_err(anyhow::Error::msg)?;
+                    serde_json::to_value(baseline)?
+                }
+                CampaignTemplateId::SafetyCompoundLeakFire => {
+                    let mut sim = context.safety_sim.write().await;
+                    let baseline = sim.hazard_settings();
+                    sim.set_hazards(Some(0.01), Some(30.0), Some(false))
+                        .map_err(anyhow::Error::msg)?;
+                    serde_json::to_value(baseline)?
+                }
+            };
+            context
+                .campaigns
+                .write()
+                .await
+                .set_baseline(&campaign_id, baseline)
+                .map_err(anyhow::Error::msg)?;
+            journal_operation(
+                context,
+                "validation_campaign_activated",
+                campaign_id,
+                json!({ "template_id": template_id }),
+            )
+            .await;
+        }
+        CampaignAction::Complete {
+            campaign_id,
+            template_id,
+            baseline,
+            report,
+        } => {
+            match template_id {
+                CampaignTemplateId::AirlockEqualizeStiction => {
+                    let baseline: ValveFaultUpdateRequest = serde_json::from_value(baseline)?;
+                    context
+                        .sim
+                        .write()
+                        .await
+                        .set_valve_fault(baseline)
+                        .map_err(anyhow::Error::msg)?;
+                }
+                CampaignTemplateId::SafetyCompoundLeakFire => {
+                    let baseline: SafetyHazardSettings = serde_json::from_value(baseline)?;
+                    context
+                        .safety_sim
+                        .write()
+                        .await
+                        .set_hazards(
+                            Some(baseline.injected_leak_kg_s),
+                            Some(baseline.fire_source_kw),
+                            Some(baseline.habitat_isolated),
+                        )
+                        .map_err(anyhow::Error::msg)?;
+                }
+            }
+            journal_operation(
+                context,
+                "validation_campaign_completed",
+                campaign_id,
+                serde_json::to_value(report)?,
+            )
+            .await;
+        }
+    }
+    Ok(())
 }
 
 async fn api_events(State(context): State<AppContext>) -> impl IntoResponse {

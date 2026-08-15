@@ -349,6 +349,12 @@ Implement gas distribution, Sabatier, hydrogen recovery, ISRU, agriculture, wast
 
 Implement constrained authority, fork orchestration, continuous evaluation, model/data provenance, long-run dashboards, soak campaigns, and zero-discontinuity deployment.
 
+Initial implementation: a checkpointed plant-time campaign runner schedules bounded faults without
+starting or ending the plant, accepts agent observations, and scores root-cause accuracy, simulated
+detection latency, and confidence. Airlock valve-stiction and Safety compound leak/fire templates
+are live. Dataset-derived trace replay, safe-action scoring, fork orchestration, and long-run campaign
+aggregation remain follow-on work.
+
 ## 14. Immediate implementation sequence
 
 The first incremental changes are:

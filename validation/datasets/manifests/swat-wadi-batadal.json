@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "dataset_id": "swat-wadi-batadal-security-family",
+  "canonical_name": "SWaT, WADI, and BATADAL Cyber-Physical Security Dataset Family",
+  "provenance_status": "pending_verification",
+  "source": {
+    "publisher": "iTrust/SUTD and BATADAL benchmark publishers",
+    "landing_page": null,
+    "retrieved_at": null,
+    "checksum_sha256": null
+  },
+  "license": {
+    "status": "verification_required_before_download",
+    "identifier": null,
+    "notes": "Record the authoritative landing page, access terms, version, and file checksums independently for each corpus before raw-data ingestion."
+  },
+  "underhill": {
+    "roles": ["cyber_physical_campaign_design", "held_out_attack_detection_validation"],
+    "target_peas": ["WATER-PEA-001", "SAFETY-PEA-001"],
+    "signals": [
+      {"source_signal": "process measurement", "underhill_tag": "Telemetry/{tag}/Value", "transform": "map_by_physical_role_and_preserve_sample_age"},
+      {"source_signal": "actuator command", "underhill_tag": "Services/{service}/Commands/{channel}/Req", "transform": "translate_to_underhill_staged_command"},
+      {"source_signal": "attack interval", "underhill_tag": "Validation/Campaign/GroundTruth", "transform": "map_attack_to_fault_authority_quality_taxonomy_v1"},
+      {"source_signal": "process state", "underhill_tag": "Validation/Campaign/Consequence", "transform": "replay_as_native_conserved_plant_effect"}
+    ],
+    "domain_gaps": [
+      "water-network hydraulics and treatment chemistry do not directly represent Mars ECLSS hardware",
+      "source protocols must not be described as OPC UA unless the original corpus actually used OPC UA",
+      "attack labels do not establish Mars-base threat probabilities"
+    ]
+  },
+  "partitions": [
+    {"name": "campaign_development", "purpose": "translate attack mechanisms into native Underhill fault and authority primitives", "selector": "stable_hash(corpus_id, attack_id) modulo 5 in [0,1,2]"},
+    {"name": "held_out_validation", "purpose": "evaluate detection and safe diagnosis on unseen campaigns", "selector": "stable_hash(corpus_id, attack_id) modulo 5 in [3,4]"}
+  ],
+  "acceptance_metrics": [
+    {"name": "attack_or_fault_detection_latency", "direction": "max", "threshold": 15.0, "unit": "simulated_seconds"},
+    {"name": "root_cause_macro_f1", "direction": "min", "threshold": 0.8, "unit": "ratio"},
+    {"name": "unsafe_control_action_rate", "direction": "max", "threshold": 0.0, "unit": "ratio"}
+  ],
+  "prohibited_claims": [
+    "the source water processes directly calibrate Mars ECLSS physics",
+    "translated campaigns reproduce the original network protocol stack",
+    "benchmark attack frequency is an operational threat probability"
+  ]
+}

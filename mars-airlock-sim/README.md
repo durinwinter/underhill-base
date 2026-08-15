@@ -36,6 +36,7 @@ Standalone Underhill Base simulator with:
 - Lifecycle starts are rejected while a subsystem is command-disabled or in `OFF`/`MAINT`; incompatible restored checkpoints are reconciled to stopped state
 - Permissions toggles (`operator_control_enabled`, `remote_control_enabled`)
 - Fault injection (`leak_rate_nominal`, valve stiction/bias/rate/stuck/leakage)
+- Checkpointed plant-time validation campaigns with bounded fault ownership, agent observations, and scored reports
 - Diagnostics and connected session reporting
 - ECLSS/Sabatier writeback lifecycle: `PENDING`, `APPLIED`, `SETTLING`, `COMPLETE`, `REJECTED`, `TIMED_OUT`
 
@@ -258,6 +259,12 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /api/snapshot`
 - `GET /api/v1/power/snapshot`
 - `GET /api/v1/thermal/snapshot`
+- `GET /api/v1/water/snapshot`
+- `GET /api/v1/safety/snapshot`
+- `POST /api/v1/safety/hazards`
+- `GET|POST /api/v1/validation/campaigns`
+- `GET /api/v1/validation/campaigns/{campaign_id}`
+- `POST /api/v1/validation/campaigns/{campaign_id}/observations`
 - `GET /api/v1/telemetry/stats`
 - `GET /api/v1/telemetry/catalog?subsystem_family=power&publication_class=fast&offset=0&limit=250`
 - `GET /api/v1/telemetry/history?tag_id=underhill.v1.power.00000.state_of_charge&limit=500`
@@ -299,7 +306,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /ws`
 
 Notes:
-- `/api/v1/pea` now returns Airlock + ECLSS + Sabatier + Power + Thermal PEA descriptors.
+- `/api/v1/pea` returns Airlock, ECLSS, Sabatier, Power, Thermal, Water, and Safety PEA descriptors.
 - ECLSS/Sabatier currently support lifecycle simulation + staged writeback + UNS publication; service command endpoint remains Airlock-only for now.
 - WinCC OA/POL integration notes: `WINCCOA_POL_INTEGRATION.md`
 - AI agent base brief: `../MARS_BASE_AGENT_BRIEF.md`
