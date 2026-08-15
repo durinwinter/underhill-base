@@ -19,8 +19,12 @@ The backend test suite parses every JSON file in `manifests/` and rejects unsupp
 
 Initial manifests cover DAMADICS, ISDB, the SACAC PID repository, the SWaT/WADI/BATADAL security family, and NASA ICES-2025-127. DAMADICS supplies actuator fault signatures; ISDB focuses stiction behavior; SACAC supplies broader poor-loop root-cause labels; the security family defines held-out cyber-physical campaign shapes; ICES-2025-127 supplies published MADS-derived ECLSS aggregate reliability fields. None authorizes direct copying of terrestrial process magnitudes or unsupported flight-data claims into the Mars base.
 
-The live runner currently provides `airlock_equalize_stiction` and
-`safety_compound_leak_fire` templates. These are deterministic native Underhill campaigns tied to
-manifest IDs, not replays of raw source records. They run against the continuing plant clock,
-restore their bounded injection inputs on completion, retain physical consequences, and produce a
-durable diagnosis/latency/confidence report.
+The live runner currently provides `airlock_equalize_stiction`,
+`safety_compound_leak_fire`, and `maintenance_shared_tool_contention` templates. These are
+deterministic native Underhill campaigns tied to manifest IDs, not replays of raw source records.
+They run against the continuing plant clock, restore or remove their bounded injection inputs on
+completion, retain legitimate physical consequences, and produce a durable
+diagnosis/latency/confidence report. The maintenance campaign injects two synthetic work demands
+that compete for one water-loop service kit; it exercises the real persistent priority queue,
+resource reservations, historian quality, and agent observation API without consuming a flight
+spare or altering ECLSS chemistry.

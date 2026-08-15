@@ -296,6 +296,32 @@ impl MaintenanceSimulation {
         allocations
     }
 
+    pub fn cancel_work_order(&mut self, work_order_id: &str) -> Result<bool, String> {
+        let index = self
+            .work_orders
+            .iter()
+            .position(|work_order| work_order.work_order_id == work_order_id)
+            .ok_or_else(|| format!("unknown work order: {work_order_id}"))?;
+        if matches!(
+            self.work_orders[index].status,
+            WorkOrderStatus::Completed | WorkOrderStatus::Cancelled
+        ) {
+            return Ok(false);
+        }
+        if self.work_orders[index].status == WorkOrderStatus::InProgress {
+            self.release_tool_for_index(index);
+        }
+        self.work_orders[index].status = WorkOrderStatus::Cancelled;
+        self.work_orders[index].blocked_reason = None;
+        self.total_cancelled_work_orders += 1;
+        self.pending_events.push(MaintenanceEvent {
+            event_kind: "work_order_cancelled".to_string(),
+            subject: work_order_id.to_string(),
+            detail: "bounded validation demand was removed from the live queue".to_string(),
+        });
+        Ok(true)
+    }
+
     pub fn receive_spares(&mut self, sku: &str, quantity: u32) -> Result<(), String> {
         validate_inventory_mutation(sku, quantity)?;
         let entry = self.warehouse_spares.entry(sku.to_string()).or_default();
@@ -570,6 +596,33 @@ mod tests {
         assert_eq!(
             simulation.snapshot().warehouse_spares["oga_water_assembly_oru"],
             3
+        );
+    }
+
+    #[test]
+    fn cancelling_active_work_releases_its_reserved_tool() {
+        let mut sim = MaintenanceSimulation::new();
+        enqueue_test_order(&mut sim, "wo-cancel", 90, 1.0, "water_loop_service_kit");
+        sim.step(1.0, true, true);
+        assert_eq!(
+            sim.snapshot()
+                .tools
+                .iter()
+                .find(|tool| tool.tool_id == "water_loop_service_kit")
+                .unwrap()
+                .reserved_quantity,
+            1
+        );
+        assert!(sim.cancel_work_order("wo-cancel").unwrap());
+        assert!(!sim.cancel_work_order("wo-cancel").unwrap());
+        assert_eq!(
+            sim.snapshot()
+                .tools
+                .iter()
+                .find(|tool| tool.tool_id == "water_loop_service_kit")
+                .unwrap()
+                .reserved_quantity,
+            0
         );
     }
 

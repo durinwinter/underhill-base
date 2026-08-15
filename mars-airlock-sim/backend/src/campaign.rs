@@ -8,6 +8,7 @@ pub const CAMPAIGN_SCHEMA_VERSION: u32 = 1;
 pub enum CampaignTemplateId {
     AirlockEqualizeStiction,
     SafetyCompoundLeakFire,
+    MaintenanceSharedToolContention,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -273,6 +274,7 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
     let latency_limit = match campaign.template_id {
         CampaignTemplateId::AirlockEqualizeStiction => 30.0,
         CampaignTemplateId::SafetyCompoundLeakFire => 15.0,
+        CampaignTemplateId::MaintenanceSharedToolContention => 20.0,
     };
     let mut failure_reasons = Vec::new();
     if latency.is_none() {
@@ -315,6 +317,16 @@ fn template_metadata(template_id: CampaignTemplateId) -> (&'static str, &'static
                 "injected_leak_kg_s": 0.01,
                 "fire_source_kw": 30.0,
                 "habitat_isolated": false
+            }),
+        ),
+        CampaignTemplateId::MaintenanceSharedToolContention => (
+            "ices-2025-127-eclss-reliability",
+            "ROBOTICS-PEA-001",
+            serde_json::json!({
+                "expected_diagnosis": "water_loop_tool_contention",
+                "required_tool": "water_loop_service_kit",
+                "injected_work_orders": 2,
+                "available_tools": 1
             }),
         ),
     }
@@ -420,6 +432,51 @@ mod tests {
             .unwrap();
         assert!(report.passed);
         assert_eq!(report.detection_latency_sec, Some(7.0));
+    }
+
+    #[test]
+    fn maintenance_contention_template_scores_against_its_live_latency_gate() {
+        let mut manager = CampaignManager::default();
+        let campaign = manager
+            .create(
+                CreateCampaignRequest {
+                    template_id: CampaignTemplateId::MaintenanceSharedToolContention,
+                    seed: 11,
+                    fault_onset_delay_sec: 2.0,
+                    duration_sec: 30.0,
+                },
+                100.0,
+            )
+            .unwrap();
+        manager.advance(102.0);
+        manager
+            .set_baseline(
+                &campaign.campaign_id,
+                serde_json::json!({"work_order_ids": ["a", "b"]}),
+            )
+            .unwrap();
+        manager
+            .submit_observation(
+                &campaign.campaign_id,
+                SubmitObservationRequest {
+                    agent_id: "maintenance-agent".to_string(),
+                    diagnosis: "water loop tool contention".to_string(),
+                    confidence: 0.9,
+                    evidence: vec!["blocked work order".to_string()],
+                    recommendation: Some("preserve priority".to_string()),
+                },
+                121.0,
+            )
+            .unwrap();
+        manager.advance(132.0);
+        let report = manager
+            .get(&campaign.campaign_id)
+            .unwrap()
+            .report
+            .as_ref()
+            .unwrap();
+        assert!(report.passed);
+        assert_eq!(report.detection_latency_sec, Some(19.0));
     }
 
     #[test]

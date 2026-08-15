@@ -40,6 +40,8 @@ Standalone Underhill Base simulator with:
 - Checkpointed plant-time validation campaigns with bounded fault ownership, agent observations, and scored reports
 - Seeded, checkpointed ECLSS ORU reliability with physical capacity loss, partial degradation, finite spares, and continuous repair work orders
 - Checkpointed shared maintenance dispatch: ECLSS repairs progress only when allocated crew/robot labor, tools, critical power, and the Maintenance PEA are available
+- Historian-backed maintenance telemetry for warehouse stock, tool reservations, queue contention, crew, and robots with explicit quality states
+- Native `maintenance_shared_tool_contention` validation campaign for agent diagnosis and latency scoring against the live queue
 - Diagnostics and connected session reporting
 - ECLSS/Sabatier writeback lifecycle: `PENDING`, `APPLIED`, `SETTLING`, `COMPLETE`, `REJECTED`, `TIMED_OUT`
 

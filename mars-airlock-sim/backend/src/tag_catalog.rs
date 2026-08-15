@@ -21,6 +21,19 @@ const MODEL_BACKED_TAG_IDS: &[&str] = &[
     "underhill.v1.safety_structure.00000.pressure",
     "underhill.v1.safety_structure.00000.sensor_residual",
     "underhill.v1.safety_structure.00000.alarm_active",
+    "underhill.v1.robotics_logistics.00000.quantity",
+    "underhill.v1.robotics_logistics.00001.quantity",
+    "underhill.v1.robotics_logistics.00001.capacity",
+    "underhill.v1.robotics_logistics.00001.reserved_quantity",
+    "underhill.v1.robotics_logistics.00002.quantity",
+    "underhill.v1.robotics_logistics.00002.reserved_quantity",
+    "underhill.v1.robotics_logistics.00002.location_state",
+    "underhill.v1.robotics_logistics.00003.quantity",
+    "underhill.v1.robotics_logistics.00003.capacity",
+    "underhill.v1.robotics_logistics.00003.reserved_quantity",
+    "underhill.v1.robotics_logistics.00004.quantity",
+    "underhill.v1.robotics_logistics.00004.capacity",
+    "underhill.v1.robotics_logistics.00004.reserved_quantity",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -856,7 +869,13 @@ impl TagCatalog {
                     signal: template.name.to_string(),
                     role: role(template.role),
                     value_type: value_type(template.value_type),
-                    engineering_unit: template.unit.to_string(),
+                    engineering_unit: if family.slug == "robotics_logistics"
+                        && matches!(template.name, "quantity" | "capacity" | "reserved_quantity")
+                    {
+                        "count".to_string()
+                    } else {
+                        template.unit.to_string()
+                    },
                     range_min: template.range_min,
                     range_max: template.range_max,
                     internal_cadence_hz: template.internal_hz,
@@ -1025,8 +1044,15 @@ mod tests {
             catalog.stats.subsystem_counts["cross_plant_diagnostics"],
             8_000
         );
-        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_985);
-        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 15);
+        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_972);
+        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 28);
+        let robotics_quantity = catalog
+            .tags()
+            .iter()
+            .find(|tag| tag.tag_id == "underhill.v1.robotics_logistics.00000.quantity")
+            .unwrap();
+        assert_eq!(robotics_quantity.engineering_unit, "count");
+        assert_eq!(robotics_quantity.activation_state, "model_backed");
     }
 
     #[test]

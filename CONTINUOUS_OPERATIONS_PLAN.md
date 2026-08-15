@@ -276,7 +276,7 @@ The fully formed target is budgeted across subsystem families as follows. These 
 | Cross-plant diagnostics and conservation | 8,000 | mass/energy ledgers, sensor residuals, KPIs, forecasts and model confidence |
 | **Total planning envelope** | **110,000** | adjustable as PEA designs become concrete |
 
-Implementation status: schema version 1 of this 110,000-tag catalog is now generated and validated at backend startup. Stable tag IDs and complete metadata are discoverable through paginated HTTP APIs, and capacity statistics distinguish the roughly 39,089 nominal publications per second from the 1.1 million samples per second implied by a naive all-tags-at-10-Hz design. Catalog presence is not counted as model-backed activation; each PEA must explicitly bind definitions to conserved state, sensors, quality evolution, commands, and alarms. Fifteen initial ECLSS/Power/Water/Safety tags are currently marked `model_backed` and archived at deterministic one-second plant-time boundaries with quality and provenance. A tag is promoted to `sensed` only after its observation/noise/fault path is distinct from internal truth.
+Implementation status: schema version 1 of this 110,000-tag catalog is now generated and validated at backend startup. Stable tag IDs and complete metadata are discoverable through paginated HTTP APIs, and capacity statistics distinguish the roughly 39,089 nominal publications per second from the 1.1 million samples per second implied by a naive all-tags-at-10-Hz design. Catalog presence is not counted as model-backed activation; each PEA must explicitly bind definitions to conserved state, sensors, quality evolution, commands, and alarms. Twenty-eight ECLSS/Power/Water/Safety/Robotics tags are currently marked `model_backed` and archived at deterministic one-second plant-time boundaries with quality and provenance. Robotics bindings cover warehouse stock, tool capacity/reservations, work demand/state, and available/reserved crew and robots. A tag is promoted to `sensed` only after its observation/noise/fault path is distinct from internal truth.
 
 At 110,000 tags, naive 10 Hz publication would produce 1.1 million samples per second and is neither realistic nor useful. The catalog assigns each tag an internal integration cadence, sensing cadence, publication class, deadband, event behavior, and retention policy. Fast protection and control values may run at 20-100 Hz internally; ordinary SCADA values commonly publish at 1 Hz or on change; inventory, wear, and forecast values publish much more slowly. WinCC OA receives operationally meaningful tags while high-rate component truth and waveforms can remain in specialized streams or validation forks.
 
@@ -367,8 +367,10 @@ Implement constrained authority, fork orchestration, continuous evaluation, mode
 
 Initial implementation: a checkpointed plant-time campaign runner schedules bounded faults without
 starting or ending the plant, accepts agent observations, and scores root-cause accuracy, simulated
-detection latency, and confidence. Airlock valve-stiction and Safety compound leak/fire templates
-are live. Dataset-derived trace replay, safe-action scoring, fork orchestration, and long-run campaign
+detection latency, and confidence. Airlock valve-stiction, Safety compound leak/fire, and shared
+maintenance-tool contention templates are live. The maintenance template runs through the real
+priority queue and historian, then removes only its injected work demands at the campaign boundary.
+Dataset-derived trace replay, safe-action scoring, fork orchestration, and long-run campaign
 aggregation remain follow-on work.
 
 ## 14. Immediate implementation sequence

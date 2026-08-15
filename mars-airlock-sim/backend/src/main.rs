@@ -1171,6 +1171,7 @@ fn spawn_simulation_task(
                         latest_power.clone(),
                         latest_water.clone(),
                         latest_safety.clone(),
+                        latest_maintenance.clone(),
                     ));
                 }
                 eclss_snapshot = Some(latest_eclss);
@@ -1411,16 +1412,19 @@ async fn persist_core_historian_frames(
         PowerSnapshot,
         WaterSnapshot,
         SafetySnapshot,
+        MaintenanceSnapshot,
     )>,
 ) -> anyhow::Result<()> {
     let frames = frames
         .into_iter()
-        .map(|(plant_elapsed_sec, eclss, power, water, safety)| {
-            (
-                plant_elapsed_sec,
-                build_core_historian_samples(&eclss, &power, &water, &safety),
-            )
-        })
+        .map(
+            |(plant_elapsed_sec, eclss, power, water, safety, maintenance)| {
+                (
+                    plant_elapsed_sec,
+                    build_core_historian_samples(&eclss, &power, &water, &safety, &maintenance),
+                )
+            },
+        )
         .collect();
     let historian = context.historian.clone();
     tokio::task::spawn_blocking(move || historian.append_frames(wall_time_ms(), frames))
@@ -1434,6 +1438,7 @@ fn build_core_historian_samples(
     power: &PowerSnapshot,
     water: &WaterSnapshot,
     safety: &SafetySnapshot,
+    maintenance: &MaintenanceSnapshot,
 ) -> Vec<NewHistorianSample> {
     let eclss_quality = if eclss.reliability.failed_count > 0 || power.alarm_bus_undervoltage {
         TelemetryQuality::Bad
@@ -1478,6 +1483,35 @@ fn build_core_historian_samples(
     } else {
         TelemetryQuality::Good
     };
+    let maintenance_quality = if !maintenance.service_available
+        && (maintenance.active_work_orders > 0 || maintenance.queued_work_orders > 0)
+    {
+        TelemetryQuality::Bad
+    } else if maintenance.blocked_work_orders > 0
+        || maintenance
+            .warehouse_spares
+            .values()
+            .any(|quantity| *quantity == 0)
+    {
+        TelemetryQuality::Uncertain
+    } else {
+        TelemetryQuality::Good
+    };
+    let warehouse_total: u32 = maintenance.warehouse_spares.values().copied().sum();
+    let tool_capacity: u32 = maintenance
+        .tools
+        .iter()
+        .map(|tool| tool.total_quantity)
+        .sum();
+    let tools_reserved: u32 = maintenance
+        .tools
+        .iter()
+        .map(|tool| tool.reserved_quantity)
+        .sum();
+    let work_demand = maintenance.active_work_orders + maintenance.queued_work_orders;
+    let crew_reserved =
+        (maintenance.crew_technicians_total - maintenance.crew_technicians_available).max(0.0);
+    let robots_reserved = (maintenance.robots_total - maintenance.robots_available).max(0.0);
     let source = "continuous_model_v1".to_string();
     vec![
         NewHistorianSample {
@@ -1591,6 +1625,92 @@ fn build_core_historian_samples(
             tag_id: "underhill.v1.safety_structure.00000.alarm_active".to_string(),
             value: json!(safety_alarm),
             quality: safety_quality,
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00000.quantity".to_string(),
+            value: json!(warehouse_total),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00001.quantity".to_string(),
+            value: json!(tool_capacity.saturating_sub(tools_reserved)),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00001.capacity".to_string(),
+            value: json!(tool_capacity),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00001.reserved_quantity".to_string(),
+            value: json!(tools_reserved),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00002.quantity".to_string(),
+            value: json!(work_demand),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00002.reserved_quantity".to_string(),
+            value: json!(maintenance.active_work_orders),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00002.location_state".to_string(),
+            value: json!(if !maintenance.service_available {
+                "offline"
+            } else if maintenance.blocked_work_orders > 0 {
+                "resource_constrained"
+            } else if work_demand > 0 {
+                "executing"
+            } else {
+                "standby"
+            }),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00003.quantity".to_string(),
+            value: json!(maintenance.crew_technicians_available),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00003.capacity".to_string(),
+            value: json!(maintenance.crew_technicians_total),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00003.reserved_quantity".to_string(),
+            value: json!(crew_reserved),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00004.quantity".to_string(),
+            value: json!(maintenance.robots_available),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00004.capacity".to_string(),
+            value: json!(maintenance.robots_total),
+            quality: maintenance_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.robotics_logistics.00004.reserved_quantity".to_string(),
+            value: json!(robots_reserved),
+            quality: maintenance_quality,
             source,
         },
     ]
@@ -2104,6 +2224,53 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                         .map_err(anyhow::Error::msg)?;
                     serde_json::to_value(baseline)?
                 }
+                CampaignTemplateId::MaintenanceSharedToolContention => {
+                    let work_order_ids = [
+                        format!("{campaign_id}:water-loop-primary"),
+                        format!("{campaign_id}:water-loop-secondary"),
+                    ];
+                    let events = {
+                        let mut maintenance = context.maintenance_sim.write().await;
+                        maintenance
+                            .enqueue_work_order(
+                                work_order_ids[0].clone(),
+                                DEFAULT_MAINTENANCE_PEA_ID.to_string(),
+                                "validation-water-loop-primary".to_string(),
+                                "validation_tool_contention".to_string(),
+                                100,
+                                0.25,
+                                1.0,
+                                1.0,
+                                "water_loop_service_kit".to_string(),
+                            )
+                            .map_err(anyhow::Error::msg)?;
+                        if let Err(error) = maintenance.enqueue_work_order(
+                            work_order_ids[1].clone(),
+                            DEFAULT_MAINTENANCE_PEA_ID.to_string(),
+                            "validation-water-loop-secondary".to_string(),
+                            "validation_tool_contention".to_string(),
+                            90,
+                            0.25,
+                            1.0,
+                            1.0,
+                            "water_loop_service_kit".to_string(),
+                        ) {
+                            let _ = maintenance.cancel_work_order(&work_order_ids[0]);
+                            return Err(anyhow::anyhow!(error));
+                        }
+                        maintenance.drain_events()
+                    };
+                    for event in events {
+                        journal_operation(
+                            context,
+                            "maintenance_event",
+                            event.subject.clone(),
+                            serde_json::to_value(event)?,
+                        )
+                        .await;
+                    }
+                    json!({ "work_order_ids": work_order_ids })
+                }
             };
             context
                 .campaigns
@@ -2147,6 +2314,33 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                             Some(baseline.habitat_isolated),
                         )
                         .map_err(anyhow::Error::msg)?;
+                }
+                CampaignTemplateId::MaintenanceSharedToolContention => {
+                    let work_order_ids = baseline
+                        .get("work_order_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .ok_or_else(|| anyhow::anyhow!("campaign baseline lacks work_order_ids"))?;
+                    let events = {
+                        let mut maintenance = context.maintenance_sim.write().await;
+                        for work_order_id in work_order_ids {
+                            let work_order_id = work_order_id.as_str().ok_or_else(|| {
+                                anyhow::anyhow!("campaign work-order ID is not text")
+                            })?;
+                            maintenance
+                                .cancel_work_order(work_order_id)
+                                .map_err(anyhow::Error::msg)?;
+                        }
+                        maintenance.drain_events()
+                    };
+                    for event in events {
+                        journal_operation(
+                            context,
+                            "maintenance_event",
+                            event.subject.clone(),
+                            serde_json::to_value(event)?,
+                        )
+                        .await;
+                    }
                 }
             }
             journal_operation(
