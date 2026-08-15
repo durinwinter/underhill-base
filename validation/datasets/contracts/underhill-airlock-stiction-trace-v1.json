@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "contract_id": "underhill-airlock-stiction-trace-v1",
+  "dataset_id": "damadics-actuator-benchmark",
+  "evidence_class": "underhill_native_damadics_informed",
+  "source_artifact_sha256": null,
+  "sample_period_sec": 1.0,
+  "thresholds": {
+    "minimum_samples": 20,
+    "minimum_command_excursion_pct": 25.0,
+    "minimum_true_position_excursion_pct": 15.0,
+    "minimum_peak_absolute_residual_pct": 8.0,
+    "minimum_stiction_active_fraction": 0.1
+  },
+  "claim_boundary": "This contract qualifies Underhill's native stiction stimulus and trace capture. It is informed by DAMADICS actuator fault structure but is not a replay, fit, or held-out comparison against DAMADICS raw data. A source-backed contract requires recorded file terms, immutable checksums, transformations, and held-out run identities."
+}

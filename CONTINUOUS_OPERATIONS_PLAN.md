@@ -311,6 +311,13 @@ State schemas and canonical tags are versioned from the beginning. Deployment su
 
 Correctness is measured continuously rather than by mission completion:
 
+Agent validation campaigns blind their active ground truth and peer observations, use deterministic
+plant-time stimuli, and retain raw evidence plus scored reports across restart. The first valve
+qualification now proves that a stiction campaign actually exercised the actuator: seed-varying
+sub-breakaway, breakaway, and re-stick commands produce a paginated one-second trace and a versioned
+native qualification report. It is explicitly DAMADICS-informed rather than claimed as a held-out
+DAMADICS replay until source-file terms, checksums, transformations, and partitions are verified.
+
 - hard safety-envelope violations;
 - mass, energy, and inventory reconciliation error;
 - time in degraded/emergency states;

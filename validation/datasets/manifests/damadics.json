@@ -2,11 +2,11 @@
   "schema_version": 1,
   "dataset_id": "damadics-actuator-benchmark",
   "canonical_name": "DAMADICS Actuator Benchmark",
-  "provenance_status": "source_supplied",
+  "provenance_status": "source_verified",
   "source": {
     "publisher": "Warsaw University of Technology, Institute of Automatic Control and Robotics",
     "landing_page": "https://iair.mchtr.pw.edu.pl/Damadics",
-    "retrieved_at": null,
+    "retrieved_at": "2026-08-14",
     "checksum_sha256": null
   },
   "license": {

@@ -856,6 +856,10 @@ async fn main() -> anyhow::Result<()> {
             get(api_get_campaign),
         )
         .route(
+            "/api/v1/validation/campaigns/{campaign_id}/trace",
+            get(api_get_campaign_trace),
+        )
+        .route(
             "/api/v1/validation/campaigns/{campaign_id}/observations",
             post(api_submit_campaign_observation),
         )
@@ -1222,14 +1226,37 @@ fn spawn_simulation_task(
                     )
                 };
                 if scheduled.run_medium {
+                    context.campaigns.write().await.record_airlock_trace(
+                        scheduler.snapshot().plant_elapsed_sec,
+                        latest_airlock.equalize_valve_command_pct,
+                        latest_airlock.equalize_valve_pct,
+                        latest_airlock.equalize_valve_sensed_pct,
+                        latest_airlock.equalize_valve_residual_pct,
+                        latest_airlock.equalize_valve_stiction_active,
+                        latest_airlock.pressure_pa,
+                    );
                     let campaign_actions = context
                         .campaigns
                         .write()
                         .await
                         .advance(scheduler.snapshot().plant_elapsed_sec);
                     for action in campaign_actions {
+                        let campaign_id = action.campaign_id().to_string();
                         if let Err(err) = apply_campaign_action(&context, action).await {
                             error!("Failed to apply validation campaign action: {err:#}");
+                            let reason = format!("campaign action failed safely: {err:#}");
+                            let _ = context.campaigns.write().await.cancel(
+                                &campaign_id,
+                                scheduler.snapshot().plant_elapsed_sec,
+                                reason.clone(),
+                            );
+                            journal_operation(
+                                &context,
+                                "validation_campaign_cancelled",
+                                campaign_id,
+                                json!({ "reason": reason }),
+                            )
+                            .await;
                         }
                     }
                     historian_frames.push((
@@ -2281,7 +2308,14 @@ async fn api_set_safety_hazards(
 }
 
 async fn api_list_campaigns(State(context): State<AppContext>) -> impl IntoResponse {
-    let campaigns = context.campaigns.read().await.campaigns().to_vec();
+    let campaigns = context
+        .campaigns
+        .read()
+        .await
+        .campaigns()
+        .iter()
+        .map(CampaignManager::public_view)
+        .collect::<Vec<_>>();
     axum::Json(json!({
         "schema_version": campaign::CAMPAIGN_SCHEMA_VERSION,
         "count": campaigns.len(),
@@ -2292,14 +2326,14 @@ async fn api_list_campaigns(State(context): State<AppContext>) -> impl IntoRespo
 async fn api_get_campaign(
     State(context): State<AppContext>,
     Path(campaign_id): Path<String>,
-) -> Result<axum::Json<campaign::ValidationCampaign>, (StatusCode, String)> {
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
     context
         .campaigns
         .read()
         .await
         .get(&campaign_id)
         .cloned()
-        .map(axum::Json)
+        .map(|campaign| axum::Json(CampaignManager::public_view(&campaign)))
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -2308,11 +2342,74 @@ async fn api_get_campaign(
         })
 }
 
+async fn api_get_campaign_trace(
+    State(context): State<AppContext>,
+    Path(campaign_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let offset = query
+        .get("offset")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(250)
+        .clamp(1, 1_000);
+    let campaigns = context.campaigns.read().await;
+    let campaign = campaigns.get(&campaign_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("campaign not found: {campaign_id}"),
+        )
+    })?;
+    if matches!(
+        campaign.status,
+        campaign::CampaignStatus::Scheduled | campaign::CampaignStatus::Active
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            "campaign trace remains blinded until evaluation completes".to_string(),
+        ));
+    }
+    let total = campaign.trace_samples.len();
+    let items = campaign
+        .trace_samples
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let next_offset = (offset + items.len() < total).then_some(offset + items.len());
+    Ok(axum::Json(json!({
+        "schema_version": campaign::CAMPAIGN_SCHEMA_VERSION,
+        "campaign_id": campaign_id,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "next_offset": next_offset,
+        "items": items,
+    })))
+}
+
 async fn api_create_campaign(
     State(context): State<AppContext>,
     axum::Json(request): axum::Json<CreateCampaignRequest>,
-) -> Result<(StatusCode, axum::Json<campaign::ValidationCampaign>), (StatusCode, String)> {
+) -> Result<(StatusCode, axum::Json<serde_json::Value>), (StatusCode, String)> {
     let _transaction = context.plant_transaction.lock().await;
+    if request.template_id == CampaignTemplateId::AirlockEqualizeStiction {
+        let snapshot = context.sim.read().await.snapshot();
+        if snapshot.active_command.state == model::CommandStatusEnum::Running
+            || !snapshot.inner_lock_engaged
+            || !snapshot.outer_lock_engaged
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "airlock stiction qualification requires an idle airlock with both doors locked"
+                    .to_string(),
+            ));
+        }
+    }
     let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
     let campaign = context
         .campaigns
@@ -2334,14 +2431,17 @@ async fn api_create_campaign(
         serde_json::to_value(&campaign).unwrap_or_else(|_| json!({})),
     )
     .await;
-    Ok((StatusCode::CREATED, axum::Json(campaign)))
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(CampaignManager::public_view(&campaign)),
+    ))
 }
 
 async fn api_submit_campaign_observation(
     State(context): State<AppContext>,
     Path(campaign_id): Path<String>,
     axum::Json(request): axum::Json<SubmitObservationRequest>,
-) -> Result<axum::Json<campaign::ValidationCampaign>, (StatusCode, String)> {
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
     let _transaction = context.plant_transaction.lock().await;
     let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
     let campaign = context
@@ -2369,7 +2469,7 @@ async fn api_submit_campaign_observation(
         }),
     )
     .await;
-    Ok(axum::Json(campaign))
+    Ok(axum::Json(CampaignManager::public_view(&campaign)))
 }
 
 async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> anyhow::Result<()> {
@@ -2377,17 +2477,56 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
         CampaignAction::Activate {
             campaign_id,
             template_id,
+            ground_truth,
         } => {
             let baseline = match template_id {
                 CampaignTemplateId::AirlockEqualizeStiction => {
                     let mut sim = context.sim.write().await;
-                    let baseline = sim
+                    let current = sim.snapshot();
+                    if current.active_command.state == model::CommandStatusEnum::Running {
+                        return Err(anyhow::anyhow!(
+                            "airlock became busy before validation stimulus activation"
+                        ));
+                    }
+                    if !current.inner_lock_engaged || !current.outer_lock_engaged {
+                        return Err(anyhow::anyhow!(
+                            "airlock validation stimulus requires both doors locked"
+                        ));
+                    }
+                    let fault_settings = sim
                         .valve_fault_settings("equalize")
                         .map_err(anyhow::Error::msg)?;
-                    let mut injected = baseline.clone();
-                    injected.stiction_breakaway_pct = Some(18.0);
+                    let baseline_command_pct = sim
+                        .validation_valve_command_pct("equalize")
+                        .map_err(anyhow::Error::msg)?;
+                    let breakaway_pct = ground_truth
+                        .get("stiction_breakaway_pct")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or_else(|| anyhow::anyhow!("campaign ground truth lacks breakaway"))?;
+                    let direction = if baseline_command_pct <= 50.0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let hold_command_pct =
+                        (baseline_command_pct + direction * breakaway_pct * 0.7).clamp(0.0, 100.0);
+                    let break_command_pct = (baseline_command_pct
+                        + direction * (breakaway_pct + 25.0))
+                        .clamp(0.0, 100.0);
+                    let rehold_command_pct =
+                        (break_command_pct - direction * breakaway_pct * 0.6).clamp(0.0, 100.0);
+                    let stimulus_commands_pct =
+                        [hold_command_pct, break_command_pct, rehold_command_pct];
+                    let mut injected = fault_settings.clone();
+                    injected.stiction_breakaway_pct = Some(breakaway_pct);
                     sim.set_valve_fault(injected).map_err(anyhow::Error::msg)?;
-                    serde_json::to_value(baseline)?
+                    sim.set_validation_valve_command_pct("equalize", hold_command_pct)
+                        .map_err(anyhow::Error::msg)?;
+                    json!({
+                        "fault_settings": fault_settings,
+                        "baseline_command_pct": baseline_command_pct,
+                        "stimulus_commands_pct": stimulus_commands_pct,
+                    })
                 }
                 CampaignTemplateId::SafetyCompoundLeakFire => {
                     let mut sim = context.safety_sim.write().await;
@@ -2458,6 +2597,27 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
             )
             .await;
         }
+        CampaignAction::StimulateAirlockValve {
+            campaign_id,
+            command_pct,
+        } => {
+            context
+                .sim
+                .write()
+                .await
+                .set_validation_valve_command_pct("equalize", command_pct)
+                .map_err(anyhow::Error::msg)?;
+            journal_operation(
+                context,
+                "validation_campaign_stimulus",
+                campaign_id,
+                json!({
+                    "valve": "equalize",
+                    "command_pct": command_pct,
+                }),
+            )
+            .await;
+        }
         CampaignAction::Complete {
             campaign_id,
             template_id,
@@ -2466,12 +2626,19 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
         } => {
             match template_id {
                 CampaignTemplateId::AirlockEqualizeStiction => {
-                    let baseline: ValveFaultUpdateRequest = serde_json::from_value(baseline)?;
-                    context
-                        .sim
-                        .write()
-                        .await
-                        .set_valve_fault(baseline)
+                    let fault_settings: ValveFaultUpdateRequest = serde_json::from_value(
+                        baseline.get("fault_settings").cloned().ok_or_else(|| {
+                            anyhow::anyhow!("campaign baseline lacks fault settings")
+                        })?,
+                    )?;
+                    let baseline_command_pct = baseline
+                        .get("baseline_command_pct")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or_else(|| anyhow::anyhow!("campaign baseline lacks valve command"))?;
+                    let mut sim = context.sim.write().await;
+                    sim.set_valve_fault(fault_settings)
+                        .map_err(anyhow::Error::msg)?;
+                    sim.set_validation_valve_command_pct("equalize", baseline_command_pct)
                         .map_err(anyhow::Error::msg)?;
                 }
                 CampaignTemplateId::SafetyCompoundLeakFire => {

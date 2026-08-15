@@ -28,3 +28,18 @@ diagnosis/latency/confidence report. The maintenance campaign injects two synthe
 that compete for one water-loop service kit; it exercises the real persistent priority queue,
 resource reservations, historian quality, and agent observation API without consuming a flight
 spare or altering ECLSS chemistry.
+
+The Airlock stiction campaign now performs a seed-varying, bounded three-stage valve stimulus,
+records commanded/true/sensed position, residual, stiction state, and pressure at one-second plant
+boundaries, and emits a durable trace-qualification report. Active campaign discovery is blinded:
+template identity, dataset identity, seed, ground truth, baselines, trace values, and other agents'
+answers are withheld until completion. Completed traces are retrieved through the paginated
+`/api/v1/validation/campaigns/{campaign_id}/trace` endpoint rather than expanding every campaign
+summary. The qualification thresholds are versioned in
+`contracts/underhill-airlock-stiction-trace-v1.json`.
+
+That contract is deliberately labeled `underhill_native_damadics_informed`. The official DAMADICS
+landing page and data inventory have been verified, but the page does not publish sufficiently clear
+file-level redistribution terms. Until terms, selected archive checksums, deterministic transforms,
+and held-out run identities are recorded, Underhill must not describe this result as raw-data replay,
+DAMADICS calibration, or held-out DAMADICS comparison.

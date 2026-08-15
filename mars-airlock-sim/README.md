@@ -39,6 +39,7 @@ Standalone Underhill Base simulator with:
 - Permissions toggles (`operator_control_enabled`, `remote_control_enabled`)
 - Fault injection (`leak_rate_nominal`, valve stiction/bias/rate/stuck/leakage)
 - Checkpointed plant-time validation campaigns with bounded fault ownership, agent observations, and scored reports
+- Blinded active campaigns with seed-varying valve stimuli, durable one-second physical traces, and versioned trace qualification
 - Seeded, checkpointed ECLSS ORU reliability with physical capacity loss, partial degradation, finite spares, and continuous repair work orders
 - Checkpointed shared maintenance dispatch: ECLSS repairs progress only when allocated crew/robot labor, tools, critical power, and the Maintenance PEA are available
 - Historian-backed maintenance telemetry for warehouse stock, tool reservations, queue contention, crew, and robots with explicit quality states
@@ -293,6 +294,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `POST /api/v1/eclss/components/{component_id}/maintenance`
 - `GET|POST /api/v1/validation/campaigns`
 - `GET /api/v1/validation/campaigns/{campaign_id}`
+- `GET /api/v1/validation/campaigns/{campaign_id}/trace?offset=0&limit=250`
 - `POST /api/v1/validation/campaigns/{campaign_id}/observations`
 - `GET /api/v1/telemetry/stats`
 - `GET /api/v1/telemetry/catalog?subsystem_family=power&publication_class=fast&offset=0&limit=250`

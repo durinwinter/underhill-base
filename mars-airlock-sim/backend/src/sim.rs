@@ -698,6 +698,35 @@ impl Simulation {
         }
     }
 
+    pub fn validation_valve_command_pct(&self, valve: &str) -> Result<f64, String> {
+        match valve.trim().to_ascii_lowercase().as_str() {
+            "equalize" | "equalise" => Ok(self.equalize_valve_dynamics.command_pct),
+            "vent" => Ok(self.vent_valve_dynamics.command_pct),
+            _ => Err(format!("unknown valve: {valve}")),
+        }
+    }
+
+    pub fn set_validation_valve_command_pct(
+        &mut self,
+        valve: &str,
+        command_pct: f64,
+    ) -> Result<(), String> {
+        if !command_pct.is_finite() || !(0.0..=100.0).contains(&command_pct) {
+            return Err("validation valve command must be finite and within 0..=100".to_string());
+        }
+        match valve.trim().to_ascii_lowercase().as_str() {
+            "equalize" | "equalise" => {
+                self.equalize_valve_dynamics.command_pct = command_pct;
+                Ok(())
+            }
+            "vent" => {
+                self.vent_valve_dynamics.command_pct = command_pct;
+                Ok(())
+            }
+            _ => Err(format!("unknown valve: {valve}")),
+        }
+    }
+
     pub fn mtp_tree(&self) -> MtpTreeResponse {
         MtpTreeResponse {
             namespace: "urn:mars-airlock:mtp".to_string(),
