@@ -8,7 +8,7 @@ Standalone Underhill Base simulator with:
 - Deterministic fast/medium/slow scheduler boundaries for continuous subsystem evolution
 - Writable request-variable command model with `Operator` and `Remote` channels
 - Staged subsystem writeback model for POL-driven `ECLSS` and `Sabatier` commands
-- MTP-aligned runtime model for three PEAs (`Airlock`, `ECLSS`, `Sabatier`)
+- MTP-aligned runtime model for four PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`)
 - Native OPC UA servers via Rust crate `async-opcua` (one endpoint per PEA)
 - UNS publishing over Zenoh and/or MQTT
 - i3X-compatible HTTP API (`/api/v1/*`)
@@ -19,6 +19,7 @@ Standalone Underhill Base simulator with:
   - `AIRLOCK-PEA-001` (airlock state-machine and command model)
   - `ECLSS-PEA-001` (life-support dynamics: CO2 scrub, O2 generation, humidity/water recovery)
   - `SABATIER-PEA-001` (CO2 methanation dynamics: CH4/H2O production, reactor telemetry)
+  - `POWER-PEA-001` (islanded DC microgrid: solar/fission generation, battery, bus, load shedding)
 
 ## Runtime Features Implemented
 
@@ -60,6 +61,7 @@ Optional OPC UA env:
 - `AIRLOCK_OPCUA_PORT` (optional explicit port override for Airlock PEA)
 - `ECLSS_OPCUA_PORT` (optional explicit port override for ECLSS PEA)
 - `SABATIER_OPCUA_PORT` (optional explicit port override for Sabatier PEA)
+- `POWERGRID_OPCUA_PORT` (optional explicit port override for Power PEA)
 - `AIRLOCK_OPCUA_ENDPOINT_PATH` (default `/underhill/airlock`)
 - `UNDERHILL_OPCUA_PORT_RANGE` (default `4841-4899`)
 - `UNDERHILL_OPCUA_PORT_ALLOCATIONS_FILE` (default `backend/data/opcua_port_allocations.json`)
@@ -90,7 +92,7 @@ Continuous runtime env:
 The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
 fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
 plant elapsed time, Mars sol, time scale, step index, catch-up backlog, and persistence settings.
-The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, PEA runtime, operator,
+The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, PEA runtime, operator,
 and scheduler state, retains the preceding checkpoint as a recovery fallback, and restores the
 same plant identity on restart. Lifecycle records are appended to `plant-events.ndjson`. Docker
 Compose mounts `backend/data`, so container replacement does not discard the represented plant.
@@ -107,6 +109,12 @@ Airlock valve commands no longer change physical position instantaneously. The e
 vent valves model rate-limited lag, deadband, stiction, hard-stuck faults, leakage, and sensor bias.
 HTTP snapshots and OPC UA expose commanded, true, and sensed position, command/sensor residual,
 and stiction state so controllers and diagnostic agents can be evaluated against non-ideal loops.
+
+The Power PEA continuously couples actual Airlock, ECLSS, and Sabatier demand to deterministic
+Mars-sol solar input, steady fission generation, battery charge/discharge limits and efficiencies,
+DC-bus voltage, flexible-load shedding, unmet critical load, and cumulative energy counters. Its
+instantaneous balance residual is exposed so agents can verify conservation rather than trusting
+plausible-looking independent signals. Power state and energy integrals survive canonical restarts.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`
@@ -137,6 +145,7 @@ Host URL:
 - `opc.tcp://127.0.0.1:${AIRLOCK_OPCUA_PORT:-4841}${AIRLOCK_OPCUA_ENDPOINT_PATH:-/underhill/airlock}`
 - `opc.tcp://127.0.0.1:${ECLSS_OPCUA_PORT:-4842}/underhill/eclss`
 - `opc.tcp://127.0.0.1:${SABATIER_OPCUA_PORT:-4843}/underhill/sabatier`
+- `opc.tcp://127.0.0.1:${POWERGRID_OPCUA_PORT:-4844}/underhill/power`
 - i3X endpoints start at: `http://127.0.0.1:${AIRLOCK_HTTP_PORT:-8080}/api/v1/namespaces`
 
 Optional env file:
@@ -157,6 +166,7 @@ flatpak-spawn --host /usr/bin/env bash -lc 'cd "/home/earthling/Documents/Focus/
   - `opc.tcp://127.0.0.1:4841/underhill/airlock`
   - `opc.tcp://127.0.0.1:4842/underhill/eclss`
   - `opc.tcp://127.0.0.1:4843/underhill/sabatier`
+  - `opc.tcp://127.0.0.1:4844/underhill/power`
 - MQTT Explorer:
   - Set `UNS_MQTT_BROKER` (for example `mqtt://127.0.0.1:1883`)
   - Browse from topic root `murph/habitat/nodes/{node_id}/pea/`
@@ -190,6 +200,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 
 - `GET /api/health`
 - `GET /api/snapshot`
+- `GET /api/v1/power/snapshot`
 - `GET /api/events`
 - `GET /api/mtp/tree`
 - `GET /api/v1/pea`
@@ -228,7 +239,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /ws`
 
 Notes:
-- `/api/v1/pea` now returns Airlock + ECLSS + Sabatier PEA descriptors.
+- `/api/v1/pea` now returns Airlock + ECLSS + Sabatier + Power PEA descriptors.
 - ECLSS/Sabatier currently support lifecycle simulation + staged writeback + UNS publication; service command endpoint remains Airlock-only for now.
 - WinCC OA/POL integration notes: `WINCCOA_POL_INTEGRATION.md`
 - AI agent base brief: `../MARS_BASE_AGENT_BRIEF.md`
@@ -245,9 +256,11 @@ PEA package artifacts:
 - Airlock PEA endpoint: `opc.tcp://127.0.0.1:4841/underhill/airlock`
 - ECLSS PEA endpoint: `opc.tcp://127.0.0.1:4842/underhill/eclss`
 - Sabatier PEA endpoint: `opc.tcp://127.0.0.1:4843/underhill/sabatier`
+- Power PEA endpoint: `opc.tcp://127.0.0.1:4844/underhill/power`
 - Airlock namespace URI: `urn:mars-airlock:mtp`
 - ECLSS namespace URI: `urn:underhill:eclss:mtp`
 - Sabatier namespace URI: `urn:underhill:sabatier:mtp`
+- Power namespace URI: `urn:underhill:power:mtp`
 
 ## Command Write Payload Example
 

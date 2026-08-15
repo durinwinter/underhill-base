@@ -15,7 +15,7 @@ use crate::{
     PeaRuntimeState, SubsystemOperatorState,
     plant_runtime::PlantSchedulerState,
     sim::Simulation,
-    subsystems::{EclssSimulation, SabatierSimulation},
+    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation},
 };
 
 pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
@@ -35,11 +35,17 @@ pub struct PlantCheckpoint {
     pub airlock: Simulation,
     pub eclss: EclssSimulation,
     pub sabatier: SabatierSimulation,
+    #[serde(default = "PowerSimulation::new")]
+    pub power: PowerSimulation,
     pub airlock_runtime: PeaRuntimeState,
     pub eclss_runtime: PeaRuntimeState,
     pub sabatier_runtime: PeaRuntimeState,
+    #[serde(default = "default_running_runtime")]
+    pub power_runtime: PeaRuntimeState,
     pub eclss_operator_state: SubsystemOperatorState,
     pub sabatier_operator_state: SubsystemOperatorState,
+    #[serde(default)]
+    pub power_operator_state: SubsystemOperatorState,
 }
 
 impl PlantCheckpoint {
@@ -51,11 +57,14 @@ impl PlantCheckpoint {
         airlock: Simulation,
         eclss: EclssSimulation,
         sabatier: SabatierSimulation,
+        power: PowerSimulation,
         airlock_runtime: PeaRuntimeState,
         eclss_runtime: PeaRuntimeState,
         sabatier_runtime: PeaRuntimeState,
+        power_runtime: PeaRuntimeState,
         eclss_operator_state: SubsystemOperatorState,
         sabatier_operator_state: SubsystemOperatorState,
+        power_operator_state: SubsystemOperatorState,
     ) -> Self {
         Self {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
@@ -66,11 +75,14 @@ impl PlantCheckpoint {
             airlock,
             eclss,
             sabatier,
+            power,
             airlock_runtime,
             eclss_runtime,
             sabatier_runtime,
+            power_runtime,
             eclss_operator_state,
             sabatier_operator_state,
+            power_operator_state,
         }
     }
 
@@ -93,6 +105,14 @@ impl PlantCheckpoint {
             bail!("checkpoint plant elapsed time is invalid");
         }
         Ok(())
+    }
+}
+
+fn default_running_runtime() -> PeaRuntimeState {
+    PeaRuntimeState {
+        deployed: true,
+        running: true,
+        last_transition_ms: 0,
     }
 }
 
@@ -449,6 +469,7 @@ mod tests {
             Simulation::new("NONE".to_string(), "opc.tcp://test".to_string()),
             EclssSimulation::new(),
             SabatierSimulation::new(),
+            PowerSimulation::new(),
             PeaRuntimeState {
                 deployed: true,
                 running: true,
@@ -464,6 +485,12 @@ mod tests {
                 running: false,
                 last_transition_ms: 3,
             },
+            PeaRuntimeState {
+                deployed: true,
+                running: true,
+                last_transition_ms: 4,
+            },
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
         )

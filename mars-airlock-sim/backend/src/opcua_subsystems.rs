@@ -15,7 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     PeaRuntimeState,
-    subsystems::{EclssSimulation, SabatierSimulation},
+    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation},
 };
 
 #[derive(Clone, Debug)]
@@ -102,6 +102,27 @@ struct SabatierNodes {
     alarm_reactor_temp: NodeId,
 }
 
+#[derive(Clone)]
+struct PowerNodes {
+    endpoint_url: NodeId,
+    security_mode: NodeId,
+    service_state: NodeId,
+    deployed: NodeId,
+    running: NodeId,
+    generation_kw: NodeId,
+    requested_load_kw: NodeId,
+    served_load_kw: NodeId,
+    battery_power_kw: NodeId,
+    battery_energy_kwh: NodeId,
+    battery_soc_pct: NodeId,
+    bus_voltage_v: NodeId,
+    unmet_load_kw: NodeId,
+    load_shed_active: NodeId,
+    alarm_battery_low: NodeId,
+    alarm_bus_undervoltage: NodeId,
+    balance_error_kw: NodeId,
+}
+
 pub fn spawn_eclss_opcua_server(
     sim: Arc<RwLock<EclssSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
@@ -140,6 +161,27 @@ pub fn spawn_sabatier_opcua_server(
     tokio::spawn(async move {
         if let Err(err) = run_sabatier_opcua_server(sim, runtime, config).await {
             error!("Sabatier OPC UA server exited with error: {err}");
+        }
+    });
+}
+
+pub fn spawn_power_opcua_server(
+    sim: Arc<RwLock<PowerSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    port: u16,
+    security_profile: String,
+) {
+    let config = SubsystemOpcuaConfig::new(
+        port,
+        "/underhill/power",
+        "./pki/power",
+        security_profile,
+        "Underhill Power OPC UA Server",
+        "urn:underhill:power:opcua-server",
+    );
+    tokio::spawn(async move {
+        if let Err(err) = run_power_opcua_server(sim, runtime, config).await {
+            error!("Power OPC UA server exited with error: {err}");
         }
     });
 }
@@ -349,6 +391,114 @@ async fn run_sabatier_opcua_server(
                 .into_iter(),
             ) {
                 warn!("Failed updating Sabatier OPC UA values: {err}");
+            }
+        }
+    });
+
+    run_server(server, &config).await?;
+    handle.cancel();
+    let _ = sync_task.await;
+    Ok(())
+}
+
+async fn run_power_opcua_server(
+    sim: Arc<RwLock<PowerSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    config: SubsystemOpcuaConfig,
+) -> anyhow::Result<()> {
+    let namespace_uri = "urn:underhill:power:mtp";
+    let (server, handle) = build_server(&config, namespace_uri)?;
+    let manager = handle
+        .node_managers()
+        .get_of_type::<SimpleNodeManager>()
+        .ok_or_else(|| anyhow::anyhow!("SimpleNodeManager not available for Power"))?;
+    let ns = handle
+        .get_namespace_index(namespace_uri)
+        .ok_or_else(|| anyhow::anyhow!("Namespace index unavailable for Power"))?;
+    let nodes = build_power_address_space(ns, &manager);
+    let subscriptions = handle.subscriptions().clone();
+    let server_handle = handle.clone();
+    let endpoint_url = config.endpoint_url();
+    let security_profile = config.security_profile.clone();
+
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = server_handle.token().cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            let snapshot = sim.read().await.snapshot();
+            let runtime_state = *runtime.read().await;
+            let values = vec![
+                (
+                    &nodes.endpoint_url,
+                    DataValue::new_now(endpoint_url.clone()),
+                ),
+                (
+                    &nodes.security_mode,
+                    DataValue::new_now(security_profile.clone()),
+                ),
+                (
+                    &nodes.service_state,
+                    DataValue::new_now(state_for_runtime(runtime_state)),
+                ),
+                (&nodes.deployed, DataValue::new_now(runtime_state.deployed)),
+                (&nodes.running, DataValue::new_now(runtime_state.running)),
+                (
+                    &nodes.generation_kw,
+                    DataValue::new_now(snapshot.generation_kw),
+                ),
+                (
+                    &nodes.requested_load_kw,
+                    DataValue::new_now(snapshot.requested_load_kw),
+                ),
+                (
+                    &nodes.served_load_kw,
+                    DataValue::new_now(snapshot.served_load_kw),
+                ),
+                (
+                    &nodes.battery_power_kw,
+                    DataValue::new_now(snapshot.battery_power_kw),
+                ),
+                (
+                    &nodes.battery_energy_kwh,
+                    DataValue::new_now(snapshot.battery_energy_kwh),
+                ),
+                (
+                    &nodes.battery_soc_pct,
+                    DataValue::new_now(snapshot.battery_soc_pct),
+                ),
+                (
+                    &nodes.bus_voltage_v,
+                    DataValue::new_now(snapshot.bus_voltage_v),
+                ),
+                (
+                    &nodes.unmet_load_kw,
+                    DataValue::new_now(snapshot.unmet_load_kw),
+                ),
+                (
+                    &nodes.load_shed_active,
+                    DataValue::new_now(snapshot.load_shed_active),
+                ),
+                (
+                    &nodes.alarm_battery_low,
+                    DataValue::new_now(snapshot.alarm_battery_low),
+                ),
+                (
+                    &nodes.alarm_bus_undervoltage,
+                    DataValue::new_now(snapshot.alarm_bus_undervoltage),
+                ),
+                (
+                    &nodes.balance_error_kw,
+                    DataValue::new_now(snapshot.instantaneous_balance_error_kw),
+                ),
+            ];
+            if let Err(err) = manager.set_values(
+                &subscriptions,
+                values.into_iter().map(|(node, value)| (node, None, value)),
+            ) {
+                warn!("Failed updating Power OPC UA values: {err}");
             }
         }
     });
@@ -865,6 +1015,184 @@ fn build_sabatier_address_space(
         catalyst_health_pct,
         power_kw,
         alarm_reactor_temp,
+    }
+}
+
+fn build_power_address_space(
+    ns: u16,
+    manager: &Arc<opcua::server::node_manager::memory::InMemoryNodeManager<SimpleNodeManagerImpl>>,
+) -> PowerNodes {
+    let underhill = NodeId::new(ns, "Underhill");
+    let pea = NodeId::new(ns, "Underhill.PowerPEA");
+    let diagnostics = NodeId::new(ns, "Underhill.PowerPEA.Diagnostics");
+    let services = NodeId::new(ns, "Underhill.PowerPEA.Services");
+    let service = NodeId::new(ns, "Underhill.PowerPEA.Services.PowerService");
+    let control = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.Services.PowerService.ServiceControl",
+    );
+    let data = NodeId::new(ns, "Underhill.PowerPEA.DataAssemblies");
+    let indicators = NodeId::new(ns, "Underhill.PowerPEA.DataAssemblies.Indicators");
+    let alarms = NodeId::new(ns, "Underhill.PowerPEA.DataAssemblies.Alarms");
+    let mut space = manager.address_space().write();
+    space.add_folder(
+        &underhill,
+        "Underhill",
+        "Underhill",
+        &NodeId::objects_folder_id(),
+    );
+    space.add_folder(&pea, "PowerPEA", "PowerPEA", &underhill);
+    for (node, browse, parent) in [
+        (&diagnostics, "Diagnostics", &pea),
+        (&services, "Services", &pea),
+        (&service, "PowerService", &services),
+        (&control, "ServiceControl", &service),
+        (&data, "DataAssemblies", &pea),
+        (&indicators, "Indicators", &data),
+        (&alarms, "Alarms", &data),
+    ] {
+        space.add_folder(node, browse, browse, parent);
+    }
+    let endpoint_url = NodeId::new(ns, "Underhill.PowerPEA.Diagnostics.EndpointUrl");
+    let security_mode = NodeId::new(ns, "Underhill.PowerPEA.Diagnostics.SecurityMode");
+    let service_state = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.Services.PowerService.ServiceControl.State",
+    );
+    let deployed = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.Services.PowerService.ServiceControl.Deployed",
+    );
+    let running = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.Services.PowerService.ServiceControl.Running",
+    );
+    let generation_kw = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.GenerationKw",
+    );
+    let requested_load_kw = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.RequestedLoadKw",
+    );
+    let served_load_kw = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.ServedLoadKw",
+    );
+    let battery_power_kw = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.BatteryPowerKw",
+    );
+    let battery_energy_kwh = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.BatteryEnergyKwh",
+    );
+    let battery_soc_pct = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.BatterySocPct",
+    );
+    let bus_voltage_v = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.BusVoltageV",
+    );
+    let unmet_load_kw = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Indicators.UnmetLoadKw",
+    );
+    let load_shed_active = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Alarms.LoadShedActive",
+    );
+    let alarm_battery_low = NodeId::new(ns, "Underhill.PowerPEA.DataAssemblies.Alarms.BatteryLow");
+    let alarm_bus_undervoltage = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.DataAssemblies.Alarms.BusUndervoltage",
+    );
+    let balance_error_kw = NodeId::new(
+        ns,
+        "Underhill.PowerPEA.Diagnostics.InstantaneousBalanceErrorKw",
+    );
+    for (parent, node, browse, value) in [
+        (
+            &diagnostics,
+            &endpoint_url,
+            "EndpointUrl",
+            Variant::from(""),
+        ),
+        (
+            &diagnostics,
+            &security_mode,
+            "SecurityMode",
+            Variant::from("NONE"),
+        ),
+        (&control, &service_state, "State", Variant::from("Idle")),
+    ] {
+        insert_var(&mut space, parent, node, browse, value, false);
+    }
+    insert_var(&mut space, &control, &deployed, "Deployed", true, false);
+    insert_var(&mut space, &control, &running, "Running", true, false);
+    for (node, browse) in [
+        (&generation_kw, "GenerationKw"),
+        (&requested_load_kw, "RequestedLoadKw"),
+        (&served_load_kw, "ServedLoadKw"),
+        (&battery_power_kw, "BatteryPowerKw"),
+        (&battery_energy_kwh, "BatteryEnergyKwh"),
+        (&battery_soc_pct, "BatterySocPct"),
+        (&bus_voltage_v, "BusVoltageV"),
+        (&unmet_load_kw, "UnmetLoadKw"),
+    ] {
+        insert_var(&mut space, &indicators, node, browse, 0.0f64, false);
+    }
+    insert_var(
+        &mut space,
+        &alarms,
+        &load_shed_active,
+        "LoadShedActive",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_battery_low,
+        "BatteryLow",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_bus_undervoltage,
+        "BusUndervoltage",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &balance_error_kw,
+        "InstantaneousBalanceErrorKw",
+        0.0f64,
+        false,
+    );
+    PowerNodes {
+        endpoint_url,
+        security_mode,
+        service_state,
+        deployed,
+        running,
+        generation_kw,
+        requested_load_kw,
+        served_load_kw,
+        battery_power_kw,
+        battery_energy_kwh,
+        battery_soc_pct,
+        bus_voltage_v,
+        unmet_load_kw,
+        load_shed_active,
+        alarm_battery_low,
+        alarm_bus_undervoltage,
+        balance_error_kw,
     }
 }
 

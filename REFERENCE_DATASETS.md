@@ -73,7 +73,7 @@ Raw third-party data does not enter Git unless its license and size make that ap
 ### NASA and other traceable Li-ion battery aging datasets
 
 - **Underhill use:** Battery capacity fade, resistance growth, temperature dependence, cycling damage, state-of-health estimation, and remaining-useful-life validation.
-- **Role:** Calibrate the future Power PEA only after cell chemistry, format, duty cycle, thermal environment, and extrapolation limits are matched.
+- **Role:** Calibrate the Power PEA degradation layer only after cell chemistry, format, duty cycle, thermal environment, and extrapolation limits are matched.
 - **Mars-specific extension:** couple measured cell behavior to modeled pack topology, radiation uncertainty, dust-driven solar variability, thermal-control limitations, and islanded DC-bus operation.
 
 ### FEMTO/PRONOSTIA and CWRU bearing datasets
@@ -112,3 +112,5 @@ They may be reconsidered only for a narrowly documented algorithmic test that do
 7. Record every dataset-derived parameter set and campaign identifier in checkpoints, historian metadata, and evaluation reports.
 
 Current implementation status: the Airlock equalization and vent valves now provide deterministic lag, travel-rate limiting, deadband, breakaway stiction, leakage, sensor bias, and hard-stuck behavior with commanded/true/sensed/residual telemetry. Hysteresis, stochastic noise, dataset manifests, parameter fitting, and held-out comparison metrics remain to be implemented before claiming DAMADICS or ISDB calibration.
+
+The initial Power PEA now provides a conservation-checked islanded DC microgrid with Mars-sol solar forcing, fission generation, battery charge/discharge constraints and efficiency, coupled subsystem demand, load shedding, cumulative energy accounting, durable restart state, REST/UNS telemetry, and an independent OPC UA endpoint. It is not yet calibrated to a battery aging dataset: pack topology, temperature, resistance growth, capacity fade, cycle damage, and chemistry-specific limits remain explicit follow-on work.

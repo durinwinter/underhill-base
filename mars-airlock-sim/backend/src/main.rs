@@ -54,17 +54,22 @@ use crate::plant_runtime::{
     DowntimePolicy, PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler, PlantSchedulerState,
 };
 use crate::sim::Simulation;
-use crate::subsystems::{EclssSimulation, EclssSnapshot, SabatierSimulation, SabatierSnapshot};
+use crate::subsystems::{
+    EclssSimulation, EclssSnapshot, PowerSimulation, PowerSnapshot, SabatierSimulation,
+    SabatierSnapshot,
+};
 
 const DEFAULT_NODE_ID: &str = "local";
 const DEFAULT_AIRLOCK_PEA_ID: &str = "AIRLOCK-PEA-001";
 const DEFAULT_ECLSS_PEA_ID: &str = "ECLSS-PEA-001";
 const DEFAULT_SABATIER_PEA_ID: &str = "SABATIER-PEA-001";
+const DEFAULT_POWER_PEA_ID: &str = "POWER-PEA-001";
 const DEFAULT_OPCUA_PORT_RANGE_MIN: u16 = 4841;
 const DEFAULT_OPCUA_PORT_RANGE_MAX: u16 = 4899;
 const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
 const ECLSS_SERVICE_TAG: &str = "EclssService";
 const SABATIER_SERVICE_TAG: &str = "SabatierService";
+const POWER_SERVICE_TAG: &str = "PowerService";
 
 /// Combined WebSocket snapshot for 3D visualization frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +92,12 @@ struct SystemsSnapshot {
     h2_flow: f64,
     co2_flow: f64,
     product_flow: f64,
+    // Power System
+    power_generation_kw: f64,
+    power_load_kw: f64,
+    battery_soc_pct: f64,
+    dc_bus_voltage_v: f64,
+    power_load_shed_active: bool,
     // Status
     healthy: bool,
 }
@@ -107,10 +118,13 @@ struct AppContext {
     airlock_runtime: Arc<RwLock<PeaRuntimeState>>,
     eclss_runtime: Arc<RwLock<PeaRuntimeState>>,
     sabatier_runtime: Arc<RwLock<PeaRuntimeState>>,
+    power_runtime: Arc<RwLock<PeaRuntimeState>>,
     eclss_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     sabatier_operator_state: Arc<RwLock<SubsystemOperatorState>>,
+    power_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     eclss_sim: Arc<RwLock<EclssSimulation>>,
     sabatier_sim: Arc<RwLock<SabatierSimulation>>,
+    power_sim: Arc<RwLock<PowerSimulation>>,
     pea_opcua_endpoints: Arc<HashMap<String, String>>,
     zenoh_session: Option<Arc<Session>>,
     mqtt_uns: Option<Arc<mqtt_uns::MqttUnsPublisher>>,
@@ -240,10 +254,19 @@ async fn main() -> anyhow::Result<()> {
             })
         })
         .transpose()?;
+    let forced_power_port = std::env::var("POWERGRID_OPCUA_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("Invalid POWERGRID_OPCUA_PORT value {value}; expected integer")
+            })
+        })
+        .transpose()?;
 
     let airlock_port = allocate_opcua_port_for_pea(DEFAULT_AIRLOCK_PEA_ID, forced_airlock_port)?;
     let eclss_port = allocate_opcua_port_for_pea(DEFAULT_ECLSS_PEA_ID, forced_eclss_port)?;
     let sabatier_port = allocate_opcua_port_for_pea(DEFAULT_SABATIER_PEA_ID, forced_sabatier_port)?;
+    let power_port = allocate_opcua_port_for_pea(DEFAULT_POWER_PEA_ID, forced_power_port)?;
 
     let opcua_runtime_config = opcua::OpcuaRuntimeConfig::from_env_with_port(airlock_port);
     let opcua_endpoint_url = opcua_runtime_config.endpoint_url();
@@ -251,6 +274,7 @@ async fn main() -> anyhow::Result<()> {
     let eclss_endpoint_url = build_opcua_endpoint_url(&opcua_host, eclss_port, "/underhill/eclss");
     let sabatier_endpoint_url =
         build_opcua_endpoint_url(&opcua_host, sabatier_port, "/underhill/sabatier");
+    let power_endpoint_url = build_opcua_endpoint_url(&opcua_host, power_port, "/underhill/power");
     info!(
         "Allocated OPC UA port {} for {} (endpoint {})",
         opcua_runtime_config.port(),
@@ -258,8 +282,13 @@ async fn main() -> anyhow::Result<()> {
         opcua_endpoint_url
     );
     info!(
-        "Reserved OPC UA ports {} ({}) and {} ({})",
-        eclss_port, DEFAULT_ECLSS_PEA_ID, sabatier_port, DEFAULT_SABATIER_PEA_ID
+        "Reserved OPC UA ports {} ({}), {} ({}), and {} ({})",
+        eclss_port,
+        DEFAULT_ECLSS_PEA_ID,
+        sabatier_port,
+        DEFAULT_SABATIER_PEA_ID,
+        power_port,
+        DEFAULT_POWER_PEA_ID
     );
 
     let plant_persistence = Arc::new(PlantPersistence::from_env()?);
@@ -292,11 +321,14 @@ async fn main() -> anyhow::Result<()> {
         airlock_state,
         eclss_state,
         sabatier_state,
+        power_state,
         airlock_runtime_state,
         eclss_runtime_state,
         sabatier_runtime_state,
+        power_runtime_state,
         eclss_operator_state_value,
         sabatier_operator_state_value,
+        power_operator_state_value,
         plant_scheduler,
         plant_recovery,
     ) = match restored_checkpoint {
@@ -339,11 +371,14 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.airlock,
                 checkpoint.eclss,
                 checkpoint.sabatier,
+                checkpoint.power,
                 checkpoint.airlock_runtime,
                 checkpoint.eclss_runtime,
                 checkpoint.sabatier_runtime,
+                checkpoint.power_runtime,
                 checkpoint.eclss_operator_state,
                 checkpoint.sabatier_operator_state,
+                checkpoint.power_operator_state,
                 scheduler,
                 PlantRecoveryStatus {
                     restored_from_checkpoint: true,
@@ -359,9 +394,12 @@ async fn main() -> anyhow::Result<()> {
             Simulation::new(initial_security.clone(), opcua_endpoint_url.clone()),
             EclssSimulation::new(),
             SabatierSimulation::new(),
+            PowerSimulation::new(),
             default_runtime,
             default_runtime,
             default_runtime,
+            default_runtime,
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             PlantScheduler::new(plant_runtime_config),
@@ -379,10 +417,13 @@ async fn main() -> anyhow::Result<()> {
     let airlock_runtime = Arc::new(RwLock::new(airlock_runtime_state));
     let eclss_runtime = Arc::new(RwLock::new(eclss_runtime_state));
     let sabatier_runtime = Arc::new(RwLock::new(sabatier_runtime_state));
+    let power_runtime = Arc::new(RwLock::new(power_runtime_state));
     let eclss_operator_state = Arc::new(RwLock::new(eclss_operator_state_value));
     let sabatier_operator_state = Arc::new(RwLock::new(sabatier_operator_state_value));
+    let power_operator_state = Arc::new(RwLock::new(power_operator_state_value));
     let eclss_sim = Arc::new(RwLock::new(eclss_state));
     let sabatier_sim = Arc::new(RwLock::new(sabatier_state));
+    let power_sim = Arc::new(RwLock::new(power_state));
     let pea_opcua_endpoints = Arc::new(HashMap::from([
         (
             DEFAULT_AIRLOCK_PEA_ID.to_string(),
@@ -390,6 +431,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         (DEFAULT_ECLSS_PEA_ID.to_string(), eclss_endpoint_url),
         (DEFAULT_SABATIER_PEA_ID.to_string(), sabatier_endpoint_url),
+        (DEFAULT_POWER_PEA_ID.to_string(), power_endpoint_url),
     ]));
     let (snapshots_tx, _snapshots_rx) = broadcast::channel(256);
     let (systems_snapshots_tx, _systems_snapshots_rx) = broadcast::channel(256);
@@ -426,15 +468,24 @@ async fn main() -> anyhow::Result<()> {
         sabatier_port,
         initial_security.clone(),
     );
+    opcua_subsystems::spawn_power_opcua_server(
+        power_sim.clone(),
+        power_runtime.clone(),
+        power_port,
+        initial_security.clone(),
+    );
     let context = AppContext {
         sim,
         airlock_runtime,
         eclss_runtime,
         sabatier_runtime,
+        power_runtime,
         eclss_operator_state,
         sabatier_operator_state,
+        power_operator_state,
         eclss_sim,
         sabatier_sim,
+        power_sim,
         pea_opcua_endpoints,
         zenoh_session,
         mqtt_uns,
@@ -458,6 +509,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/health", get(api_health))
         .route("/api/snapshot", get(api_snapshot))
+        .route("/api/v1/power/snapshot", get(api_power_snapshot))
         .route("/api/events", get(api_events))
         .route("/api/mtp/tree", get(api_mtp_tree))
         .route("/api/v1/pea", get(api_v1_list_peas))
@@ -642,30 +694,61 @@ fn spawn_simulation_task(
                 let runtime = context.sabatier_runtime.read().await;
                 runtime.deployed && runtime.running
             };
+            let power_running = {
+                let runtime = context.power_runtime.read().await;
+                runtime.deployed && runtime.running
+            };
 
             let mut eclss_snapshot = None;
             let mut sabatier_snapshot = None;
+            let mut power_snapshot = None;
             for _ in 0..steps_due {
                 let _transaction = context.plant_transaction.lock().await;
                 let scheduled = scheduler.advance_fixed_step();
-                let mut sim = context.sim.write().await;
-                sim.step(scheduled.fixed_step_sec);
-                drop(sim);
+                let prior_power = context.power_sim.read().await.snapshot();
+                let critical_power_available =
+                    prior_power.bus_voltage_v >= 360.0 && prior_power.unmet_load_kw < 0.1;
+                let flexible_power_available =
+                    critical_power_available && !prior_power.load_shed_active;
+                let latest_airlock = {
+                    let mut sim = context.sim.write().await;
+                    sim.step(scheduled.fixed_step_sec);
+                    sim.snapshot()
+                };
 
                 let latest_eclss = {
                     let mut sim = context.eclss_sim.write().await;
-                    sim.step(scheduled.fixed_step_sec, eclss_running)
+                    sim.step(
+                        scheduled.fixed_step_sec,
+                        eclss_running && critical_power_available,
+                    )
                 };
                 let latest_sabatier = {
                     let mut sim = context.sabatier_sim.write().await;
                     sim.step(
                         scheduled.fixed_step_sec,
-                        sabatier_running,
+                        sabatier_running && flexible_power_available,
                         latest_eclss.co2_capture_kgph,
+                    )
+                };
+                let airlock_load_kw = if latest_airlock.pump_on {
+                    latest_airlock.pump_current_a * 400.0 / 1_000.0
+                } else {
+                    0.35
+                };
+                let latest_power = {
+                    let mut sim = context.power_sim.write().await;
+                    sim.step(
+                        scheduled.fixed_step_sec,
+                        power_running,
+                        latest_eclss.power_kw,
+                        latest_sabatier.power_kw,
+                        airlock_load_kw,
                     )
                 };
                 eclss_snapshot = Some(latest_eclss);
                 sabatier_snapshot = Some(latest_sabatier);
+                power_snapshot = Some(latest_power);
 
                 // These deterministic boundaries are hooks for the forthcoming
                 // power/thermal and inventory/degradation model tiers.
@@ -687,6 +770,7 @@ fn spawn_simulation_task(
             let eclss_snapshot = eclss_snapshot.expect("at least one fixed step was scheduled");
             let sabatier_snapshot =
                 sabatier_snapshot.expect("at least one fixed step was scheduled");
+            let power_snapshot = power_snapshot.expect("at least one fixed step was scheduled");
             let maybe_airlock_snapshot = if publish_divider.is_multiple_of(2) {
                 let sim = context.sim.read().await;
                 Some(sim.snapshot())
@@ -720,6 +804,12 @@ fn spawn_simulation_task(
                     co2_flow: sabatier_snapshot.co2_feed_kgph,
                     product_flow: sabatier_snapshot.methane_production_kgph
                         + sabatier_snapshot.water_production_kgph,
+                    // Power
+                    power_generation_kw: power_snapshot.generation_kw,
+                    power_load_kw: power_snapshot.served_load_kw,
+                    battery_soc_pct: power_snapshot.battery_soc_pct,
+                    dc_bus_voltage_v: power_snapshot.bus_voltage_v,
+                    power_load_shed_active: power_snapshot.load_shed_active,
                     // Status
                     healthy: !airlock_snap.alarms.high_pressure_alarm_active
                         && !airlock_snap.alarms.low_pressure_alarm_active
@@ -778,6 +868,19 @@ fn spawn_simulation_task(
                     }),
                 )
                 .await;
+
+                let power_runtime = *context.power_runtime.read().await;
+                let power_operator_state = context.power_operator_state.read().await.clone();
+                publish_subsystem_uns(
+                    &context,
+                    DEFAULT_POWER_PEA_ID,
+                    POWER_SERVICE_TAG,
+                    subsystem_service_state(power_runtime, &power_operator_state),
+                    power_runtime,
+                    power_snapshot.timestamp_ms,
+                    serde_json::to_value(&power_snapshot).unwrap_or_else(|_| json!({})),
+                )
+                .await;
             }
         }
     })
@@ -829,11 +932,14 @@ async fn capture_plant_checkpoint(
         context.sim.read().await.clone(),
         context.eclss_sim.read().await.clone(),
         context.sabatier_sim.read().await.clone(),
+        context.power_sim.read().await.clone(),
         *context.airlock_runtime.read().await,
         *context.eclss_runtime.read().await,
         *context.sabatier_runtime.read().await,
+        *context.power_runtime.read().await,
         context.eclss_operator_state.read().await.clone(),
         context.sabatier_operator_state.read().await.clone(),
+        context.power_operator_state.read().await.clone(),
     ))
 }
 
@@ -909,6 +1015,10 @@ async fn api_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
     axum::Json(snapshot)
 }
 
+async fn api_power_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
+    axum::Json(context.power_sim.read().await.snapshot())
+}
+
 async fn api_events(State(context): State<AppContext>) -> impl IntoResponse {
     let events: Vec<EventEntry> = {
         let sim = context.sim.read().await;
@@ -937,6 +1047,9 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
     let sabatier_runtime = *context.sabatier_runtime.read().await;
     let sabatier_operator_state = context.sabatier_operator_state.read().await.clone();
     let sabatier_snapshot = context.sabatier_sim.read().await.snapshot();
+    let power_runtime = *context.power_runtime.read().await;
+    let power_operator_state = context.power_operator_state.read().await.clone();
+    let power_snapshot = context.power_sim.read().await.snapshot();
     let items = vec![
         build_airlock_pea_descriptor(&airlock_snapshot, airlock_runtime),
         build_eclss_pea_descriptor(
@@ -955,10 +1068,16 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
             DEFAULT_SABATIER_PEA_ID,
             SABATIER_SERVICE_TAG,
         ),
+        build_power_pea_descriptor(
+            &context,
+            &power_snapshot,
+            power_runtime,
+            &power_operator_state,
+        ),
     ];
     axum::Json(json!({
         "items": items,
-        "count": 3
+        "count": 4
     }))
 }
 
@@ -1004,6 +1123,17 @@ async fn api_v1_get_pea(
                 SABATIER_SERVICE_TAG,
             )))
         }
+        DEFAULT_POWER_PEA_ID => {
+            let runtime_state = *context.power_runtime.read().await;
+            let operator_state = context.power_operator_state.read().await.clone();
+            let snapshot = context.power_sim.read().await.snapshot();
+            Ok(axum::Json(build_power_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+            )))
+        }
         _ => Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}"))),
     }
 }
@@ -1030,13 +1160,19 @@ async fn api_v1_get_pea_opcua(
         })));
     }
 
+    let namespace_uri = match pea_id.as_str() {
+        DEFAULT_ECLSS_PEA_ID => "urn:underhill:eclss:mtp",
+        DEFAULT_SABATIER_PEA_ID => "urn:underhill:sabatier:mtp",
+        DEFAULT_POWER_PEA_ID => "urn:underhill:power:mtp",
+        _ => return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}"))),
+    };
     Ok(axum::Json(json!({
         "pea_id": pea_id,
         "endpoint_url": endpoint_url,
         "active_security_mode": "NONE",
         "security_modes_enabled": ["NONE"],
-        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id, pea_id),
-        "opcua_online": false
+        "namespace_uri": namespace_uri,
+        "opcua_online": true
     })))
 }
 
@@ -1101,6 +1237,26 @@ async fn api_v1_deploy_pea(
             &context,
             DEFAULT_SABATIER_PEA_ID,
             SABATIER_SERVICE_TAG,
+            subsystem_service_state(runtime, &operator_state),
+            runtime,
+            snap.timestamp_ms,
+            serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
+        )
+        .await;
+    } else if pea_id == DEFAULT_POWER_PEA_ID {
+        {
+            let mut runtime = context.power_runtime.write().await;
+            runtime.deployed = true;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+        let runtime = *context.power_runtime.read().await;
+        let operator_state = context.power_operator_state.read().await.clone();
+        let snap = context.power_sim.read().await.snapshot();
+        publish_subsystem_uns(
+            &context,
+            DEFAULT_POWER_PEA_ID,
+            POWER_SERVICE_TAG,
             subsystem_service_state(runtime, &operator_state),
             runtime,
             snap.timestamp_ms,
@@ -1184,6 +1340,16 @@ async fn api_v1_start_pea(
             runtime.running = true;
             runtime.last_transition_ms = transition_ms;
         }
+    } else if pea_id == DEFAULT_POWER_PEA_ID {
+        let mut runtime = context.power_runtime.write().await;
+        if !runtime.deployed {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("PEA {pea_id} is not deployed"),
+            ));
+        }
+        runtime.running = true;
+        runtime.last_transition_ms = transition_ms;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -1261,6 +1427,16 @@ async fn api_v1_stop_pea(
             runtime.running = false;
             runtime.last_transition_ms = transition_ms;
         }
+    } else if pea_id == DEFAULT_POWER_PEA_ID {
+        let mut runtime = context.power_runtime.write().await;
+        if !runtime.deployed {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("PEA {pea_id} is not deployed"),
+            ));
+        }
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -1319,6 +1495,11 @@ async fn api_v1_undeploy_pea(
         runtime.deployed = false;
         runtime.running = false;
         runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_POWER_PEA_ID {
+        let mut runtime = context.power_runtime.write().await;
+        runtime.deployed = false;
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -1371,6 +1552,15 @@ async fn api_v1_get_pea_mtp_tree(
             "pea_id": DEFAULT_SABATIER_PEA_ID,
             "namespace": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_SABATIER_PEA_ID),
             "root_path": "Objects/Underhill/SabatierPEA",
+            "nodes": nodes
+        })));
+    }
+    if pea_id == DEFAULT_POWER_PEA_ID {
+        let nodes = context.power_sim.read().await.mtp_nodes();
+        return Ok(axum::Json(json!({
+            "pea_id": DEFAULT_POWER_PEA_ID,
+            "namespace": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_POWER_PEA_ID),
+            "root_path": "Objects/Underhill/PowerPEA",
             "nodes": nodes
         })));
     }
@@ -2625,6 +2815,46 @@ fn build_sabatier_pea_descriptor(
             "catalyst_health_pct": snapshot.catalyst_health_pct,
             "power_kw": snapshot.power_kw
         },
+        "updated_at_ms": snapshot.timestamp_ms,
+        "last_transition_ms": runtime_state.last_transition_ms
+    })
+}
+
+fn build_power_pea_descriptor(
+    context: &AppContext,
+    snapshot: &PowerSnapshot,
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+) -> serde_json::Value {
+    let service_state = subsystem_service_state(runtime_state, operator_state).to_lowercase();
+    let health_state = if snapshot.alarm_bus_undervoltage {
+        "FAULT"
+    } else if snapshot.alarm_battery_low || snapshot.load_shed_active {
+        "WARN"
+    } else {
+        "OK"
+    };
+    json!({
+        "pea_id": DEFAULT_POWER_PEA_ID,
+        "pea_type": "POWER_MICROGRID",
+        "name": "Underhill Power Microgrid",
+        "node_id": context.node_id.clone(),
+        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_POWER_PEA_ID),
+        "root_path": "Objects/Underhill/PowerPEA",
+        "opcua_endpoint": context.pea_opcua_endpoints.get(DEFAULT_POWER_PEA_ID).cloned().unwrap_or_default(),
+        "health_state": health_state,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "active_command_running": false,
+        "services": [{
+            "tag": POWER_SERVICE_TAG,
+            "state": service_state,
+            "transition_active": false,
+            "active_procedure": if runtime_state.running { "Proc_MicrogridNominal" } else { "None" },
+            "command_en": operator_state.command_en
+        }],
+        "operator_state": operator_state,
+        "process_values": snapshot,
         "updated_at_ms": snapshot.timestamp_ms,
         "last_transition_ms": runtime_state.last_transition_ms
     })
