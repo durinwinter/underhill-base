@@ -29,6 +29,8 @@ services:
       UNDERHILL_PLANT_ID: "${UNDERHILL_PLANT_ID:-underhill-base-primary}"
       UNDERHILL_STATE_DIR: "${UNDERHILL_STATE_DIR:-/app/backend/data/continuous}"
       UNDERHILL_CHECKPOINT_INTERVAL_SEC: "${UNDERHILL_CHECKPOINT_INTERVAL_SEC:-60}"
+      UNDERHILL_DOWNTIME_POLICY: "${UNDERHILL_DOWNTIME_POLICY:-catch_up}"
+      UNDERHILL_MAX_DOWNTIME_CATCHUP_SEC: "${UNDERHILL_MAX_DOWNTIME_CATCHUP_SEC:-604800}"
       RUST_LOG: "${RUST_LOG:-info}"
     volumes:
       - "./pki:/app/backend/pki"

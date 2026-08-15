@@ -10,6 +10,7 @@ pub const MARS_SOL_SEC: f64 = 88_775.244;
 const DEFAULT_MEDIUM_PERIOD_SEC: f64 = 1.0;
 const DEFAULT_SLOW_PERIOD_SEC: f64 = 60.0;
 const DEFAULT_MAX_STEPS_PER_WALL_TICK: u64 = 2_000;
+const DEFAULT_MAX_DOWNTIME_CATCHUP_SEC: f64 = 604_800.0;
 const SCHEDULER_EPSILON_SEC: f64 = 1.0e-9;
 
 #[derive(Debug, Clone, Copy)]
@@ -20,6 +21,8 @@ pub struct PlantRuntimeConfig {
     pub medium_period_sec: f64,
     pub slow_period_sec: f64,
     pub max_steps_per_wall_tick: u64,
+    pub downtime_policy: DowntimePolicy,
+    pub max_downtime_catchup_sec: f64,
 }
 
 impl PlantRuntimeConfig {
@@ -37,6 +40,11 @@ impl PlantRuntimeConfig {
                 "UNDERHILL_MAX_STEPS_PER_WALL_TICK",
                 DEFAULT_MAX_STEPS_PER_WALL_TICK,
             )?,
+            downtime_policy: parse_downtime_policy()?,
+            max_downtime_catchup_sec: parse_env_f64(
+                "UNDERHILL_MAX_DOWNTIME_CATCHUP_SEC",
+                DEFAULT_MAX_DOWNTIME_CATCHUP_SEC,
+            )?,
         };
         config.validate()?;
         Ok(config)
@@ -47,6 +55,10 @@ impl PlantRuntimeConfig {
         validate_positive_finite("UNDERHILL_TIME_SCALE", self.time_scale)?;
         validate_positive_finite("UNDERHILL_MEDIUM_PERIOD_SEC", self.medium_period_sec)?;
         validate_positive_finite("UNDERHILL_SLOW_PERIOD_SEC", self.slow_period_sec)?;
+        validate_positive_finite(
+            "UNDERHILL_MAX_DOWNTIME_CATCHUP_SEC",
+            self.max_downtime_catchup_sec,
+        )?;
         if self.wall_tick_ms == 0 {
             bail!("UNDERHILL_WALL_TICK_MS must be greater than zero");
         }
@@ -67,6 +79,22 @@ impl PlantRuntimeConfig {
             PlantTimeMode::Live
         } else {
             PlantTimeMode::Accelerated
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DowntimePolicy {
+    CatchUp,
+    Freeze,
+}
+
+impl DowntimePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CatchUp => "catch_up",
+            Self::Freeze => "freeze",
         }
     }
 }
@@ -173,6 +201,20 @@ impl PlantScheduler {
         steps_due.min(self.config.max_steps_per_wall_tick)
     }
 
+    pub fn queue_downtime_catchup(&mut self, downtime_sec: f64) -> Result<()> {
+        if !downtime_sec.is_finite() || downtime_sec < 0.0 {
+            bail!("observed downtime must be finite and non-negative");
+        }
+        if downtime_sec > self.config.max_downtime_catchup_sec {
+            bail!(
+                "observed downtime of {downtime_sec:.3}s exceeds UNDERHILL_MAX_DOWNTIME_CATCHUP_SEC={:.3}s; operator recovery is required",
+                self.config.max_downtime_catchup_sec
+            );
+        }
+        self.accumulated_sim_sec += downtime_sec;
+        Ok(())
+    }
+
     pub fn advance_fixed_step(&mut self) -> ScheduledStep {
         self.accumulated_sim_sec = (self.accumulated_sim_sec - self.config.fixed_step_sec).max(0.0);
         self.plant_elapsed_sec += self.config.fixed_step_sec;
@@ -250,6 +292,20 @@ fn parse_env_u64(name: &str, default: u64) -> Result<u64> {
     }
 }
 
+fn parse_downtime_policy() -> Result<DowntimePolicy> {
+    match env::var("UNDERHILL_DOWNTIME_POLICY") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "catch_up" | "catch-up" | "catchup" => Ok(DowntimePolicy::CatchUp),
+            "freeze" => Ok(DowntimePolicy::Freeze),
+            _ => bail!(
+                "Invalid UNDERHILL_DOWNTIME_POLICY value {value}; expected catch_up or freeze"
+            ),
+        },
+        Err(env::VarError::NotPresent) => Ok(DowntimePolicy::CatchUp),
+        Err(err) => Err(err).context("Unable to read UNDERHILL_DOWNTIME_POLICY"),
+    }
+}
+
 fn validate_positive_finite(name: &str, value: f64) -> Result<()> {
     if !value.is_finite() || value <= 0.0 {
         bail!("{name} must be a finite value greater than zero");
@@ -269,6 +325,8 @@ mod tests {
             medium_period_sec: 1.0,
             slow_period_sec: 60.0,
             max_steps_per_wall_tick: 2_000,
+            downtime_policy: DowntimePolicy::CatchUp,
+            max_downtime_catchup_sec: DEFAULT_MAX_DOWNTIME_CATCHUP_SEC,
         }
     }
 
@@ -329,6 +387,31 @@ mod tests {
             scheduler.advance_fixed_step();
         }
         assert_eq!(scheduler.snapshot().backlog_steps, 9_900);
+    }
+
+    #[test]
+    fn downtime_is_queued_as_fixed_step_backlog() {
+        let mut scheduler = PlantScheduler::new(config(1.0));
+        scheduler.queue_downtime_catchup(12.5).unwrap();
+        assert_eq!(scheduler.snapshot().backlog_steps, 250);
+
+        let steps = scheduler.begin_wall_tick();
+        assert_eq!(steps, 251);
+        for _ in 0..steps {
+            scheduler.advance_fixed_step();
+        }
+        assert!((scheduler.snapshot().plant_elapsed_sec - 12.55).abs() < 1.0e-9);
+        assert_eq!(scheduler.snapshot().backlog_steps, 0);
+    }
+
+    #[test]
+    fn excessive_downtime_requires_operator_recovery() {
+        let mut limited = config(1.0);
+        limited.max_downtime_catchup_sec = 10.0;
+        let mut scheduler = PlantScheduler::new(limited);
+        let error = scheduler.queue_downtime_catchup(10.1).unwrap_err();
+        assert!(error.to_string().contains("operator recovery is required"));
+        assert_eq!(scheduler.snapshot().backlog_steps, 0);
     }
 
     #[test]

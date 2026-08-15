@@ -84,6 +84,8 @@ Continuous runtime env:
 - `UNDERHILL_PLANT_ID` (default `underhill-base-primary`; stable identity checked on restore)
 - `UNDERHILL_STATE_DIR` (default `backend/data/continuous`)
 - `UNDERHILL_CHECKPOINT_INTERVAL_SEC` (default `60` simulated seconds)
+- `UNDERHILL_DOWNTIME_POLICY` (`catch_up` by default; `freeze` is intended for validation forks)
+- `UNDERHILL_MAX_DOWNTIME_CATCHUP_SEC` (default `604800`; larger gaps require operator recovery)
 
 The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
 fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
@@ -92,6 +94,9 @@ The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, PEA ru
 and scheduler state, retains the preceding checkpoint as a recovery fallback, and restores the
 same plant identity on restart. Lifecycle records are appended to `plant-events.ndjson`. Docker
 Compose mounts `backend/data`, so container replacement does not discard the represented plant.
+On canonical restart, elapsed wall time since the checkpoint is queued as deterministic fixed-step
+catch-up work. Catch-up is bounded and visible through `/api/health`; an excessive gap stops startup
+instead of silently inventing history. Setting the policy to `freeze` is an explicit fork behavior.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`

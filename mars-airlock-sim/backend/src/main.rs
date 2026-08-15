@@ -49,9 +49,9 @@ use tower_http::{
 use tracing::{error, info, warn};
 use zenoh::Session;
 
-use crate::persistence::{PlantCheckpoint, PlantPersistence};
+use crate::persistence::{PlantCheckpoint, PlantPersistence, wall_time_ms};
 use crate::plant_runtime::{
-    PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler, PlantSchedulerState,
+    DowntimePolicy, PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler, PlantSchedulerState,
 };
 use crate::sim::Simulation;
 use crate::subsystems::{EclssSimulation, EclssSnapshot, SabatierSimulation, SabatierSnapshot};
@@ -91,6 +91,14 @@ struct SystemsSnapshot {
     healthy: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+struct PlantRecoveryStatus {
+    restored_from_checkpoint: bool,
+    downtime_policy: DowntimePolicy,
+    checkpoint_age_sec: f64,
+    queued_catchup_sec: f64,
+}
+
 #[derive(Clone)]
 struct AppContext {
     sim: Arc<RwLock<Simulation>>,
@@ -109,6 +117,7 @@ struct AppContext {
     systems_snapshots_tx: broadcast::Sender<SystemsSnapshot>,
     plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
     plant_persistence: Arc<PlantPersistence>,
+    plant_recovery: PlantRecoveryStatus,
     opcua_control: opcua::OpcuaControl,
     next_client_id: Arc<AtomicU64>,
 }
@@ -286,17 +295,30 @@ async fn main() -> anyhow::Result<()> {
         eclss_operator_state_value,
         sabatier_operator_state_value,
         plant_scheduler,
-        restored,
+        plant_recovery,
     ) = match restored_checkpoint {
         Some(mut checkpoint) => {
             checkpoint
                 .airlock
                 .prepare_after_restore(opcua_endpoint_url.clone());
-            let scheduler = PlantScheduler::from_state(plant_runtime_config, checkpoint.scheduler)?;
+            let checkpoint_age_sec =
+                wall_time_ms().saturating_sub(checkpoint.saved_wall_time_ms) as f64 / 1_000.0;
+            let mut scheduler =
+                PlantScheduler::from_state(plant_runtime_config, checkpoint.scheduler)?;
+            let queued_catchup_sec = match plant_runtime_config.downtime_policy {
+                DowntimePolicy::CatchUp => {
+                    scheduler.queue_downtime_catchup(checkpoint_age_sec)?;
+                    checkpoint_age_sec
+                }
+                DowntimePolicy::Freeze => 0.0,
+            };
             info!(
-                "Restored plant {} at simulated second {}",
+                "Restored plant {} at simulated second {}; downtime_policy={} checkpoint_age_sec={:.3} queued_catchup_sec={:.3}",
                 plant_persistence.plant_id(),
-                checkpoint.scheduler.plant_elapsed_sec
+                checkpoint.scheduler.plant_elapsed_sec,
+                plant_runtime_config.downtime_policy.as_str(),
+                checkpoint_age_sec,
+                queued_catchup_sec
             );
             (
                 checkpoint.airlock,
@@ -308,7 +330,12 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.eclss_operator_state,
                 checkpoint.sabatier_operator_state,
                 scheduler,
-                true,
+                PlantRecoveryStatus {
+                    restored_from_checkpoint: true,
+                    downtime_policy: plant_runtime_config.downtime_policy,
+                    checkpoint_age_sec,
+                    queued_catchup_sec,
+                },
             )
         }
         None => (
@@ -321,7 +348,12 @@ async fn main() -> anyhow::Result<()> {
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             PlantScheduler::new(plant_runtime_config),
-            false,
+            PlantRecoveryStatus {
+                restored_from_checkpoint: false,
+                downtime_policy: plant_runtime_config.downtime_policy,
+                checkpoint_age_sec: 0.0,
+                queued_catchup_sec: 0.0,
+            },
         ),
     };
     let sim = Arc::new(RwLock::new(airlock_state));
@@ -345,13 +377,13 @@ async fn main() -> anyhow::Result<()> {
     let plant_runtime = Arc::new(RwLock::new(plant_scheduler.snapshot()));
     plant_persistence.append_journal(
         plant_scheduler.snapshot().plant_elapsed_sec,
-        if restored {
+        if plant_recovery.restored_from_checkpoint {
             "runtime_restored"
         } else {
             "plant_genesis"
         },
         plant_persistence.plant_id(),
-        json!({ "restored": restored }),
+        serde_json::to_value(plant_recovery)?,
     )?;
 
     let opcua_control =
@@ -385,6 +417,7 @@ async fn main() -> anyhow::Result<()> {
         systems_snapshots_tx,
         plant_runtime,
         plant_persistence,
+        plant_recovery,
         opcua_control,
         next_client_id: Arc::new(AtomicU64::new(1)),
     };
@@ -733,6 +766,7 @@ async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
         "status": "ok",
         "service": "underhill-base-backend",
         "plant_runtime": plant_runtime,
+        "plant_recovery": context.plant_recovery,
         "persistence": {
             "plant_id": context.plant_persistence.plant_id(),
             "checkpoint_interval_sec": context.plant_persistence.checkpoint_interval_sec()

@@ -1,7 +1,7 @@
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -279,36 +279,87 @@ fn read_checkpoint(path: &Path, expected_plant_id: &str) -> Result<Option<PlantC
 }
 
 fn read_last_journal_sequence(path: &Path) -> Result<u64> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let payload = match fs::read(path) {
+        Ok(payload) => payload,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(err).with_context(|| format!("failed to read {}", path.display())),
     };
     let mut last_sequence = 0;
-    for (line_index, line) in BufReader::new(file).lines().enumerate() {
-        let line =
-            line.with_context(|| format!("failed reading journal line {}", line_index + 1))?;
-        if line.trim().is_empty() {
-            continue;
+    let mut line_number = 0;
+    let mut start = 0;
+
+    for newline_index in payload
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| (*byte == b'\n').then_some(index))
+    {
+        line_number += 1;
+        validate_journal_line(
+            &payload[start..newline_index],
+            line_number,
+            &mut last_sequence,
+        )?;
+        start = newline_index + 1;
+    }
+
+    if start < payload.len() {
+        line_number += 1;
+        match validate_journal_line(&payload[start..], line_number, &mut last_sequence) {
+            Ok(()) => {
+                let mut journal = OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .with_context(|| format!("failed to repair {}", path.display()))?;
+                journal
+                    .write_all(b"\n")
+                    .context("failed to terminate valid trailing journal record")?;
+                journal
+                    .sync_data()
+                    .context("failed to sync repaired operational journal")?;
+            }
+            Err(trailing_error) => {
+                let journal = OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .with_context(|| format!("failed to repair {}", path.display()))?;
+                journal
+                    .set_len(start as u64)
+                    .context("failed to truncate incomplete trailing journal record")?;
+                journal
+                    .sync_data()
+                    .context("failed to sync truncated operational journal")?;
+                tracing::warn!(
+                    "Discarded incomplete trailing journal record at line {}: {:#}",
+                    line_number,
+                    trailing_error
+                );
+            }
         }
-        let record: JournalRecord = serde_json::from_str(&line)
-            .with_context(|| format!("invalid journal record at line {}", line_index + 1))?;
-        if record.schema_version != JOURNAL_SCHEMA_VERSION {
-            bail!(
-                "unsupported journal schema version {} at line {}",
-                record.schema_version,
-                line_index + 1
-            );
-        }
-        if record.sequence <= last_sequence {
-            bail!(
-                "journal sequence is not strictly increasing at line {}",
-                line_index + 1
-            );
-        }
-        last_sequence = record.sequence;
     }
     Ok(last_sequence)
+}
+
+fn validate_journal_line(line: &[u8], line_number: usize, last_sequence: &mut u64) -> Result<()> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(());
+    }
+    let record: JournalRecord = serde_json::from_slice(line)
+        .with_context(|| format!("invalid journal record at line {line_number}"))?;
+    if record.schema_version != JOURNAL_SCHEMA_VERSION {
+        bail!(
+            "unsupported journal schema version {} at line {}",
+            record.schema_version,
+            line_number
+        );
+    }
+    if record.sequence <= *last_sequence {
+        bail!(
+            "journal sequence is not strictly increasing at line {}",
+            line_number
+        );
+    }
+    *last_sequence = record.sequence;
+    Ok(())
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
@@ -421,6 +472,65 @@ mod tests {
             .append_journal(2.0, "test", "second", serde_json::json!({}))
             .unwrap();
         assert_eq!(second.sequence, 2);
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn incomplete_crash_tail_is_discarded_before_append() {
+        let state_dir = temp_state_dir("journal-crash-tail");
+        let persistence =
+            PlantPersistence::new(state_dir.clone(), "test-plant".to_string(), 60.0).unwrap();
+        persistence
+            .append_journal(1.0, "test", "complete", serde_json::json!({}))
+            .unwrap();
+        drop(persistence);
+        let mut journal = OpenOptions::new()
+            .append(true)
+            .open(state_dir.join("plant-events.ndjson"))
+            .unwrap();
+        journal
+            .write_all(b"{\"schema_version\":1,\"sequence\":2")
+            .unwrap();
+        journal.sync_data().unwrap();
+        drop(journal);
+
+        let recovered =
+            PlantPersistence::new(state_dir.clone(), "test-plant".to_string(), 60.0).unwrap();
+        let next = recovered
+            .append_journal(2.0, "test", "after-recovery", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(next.sequence, 2);
+        assert_eq!(
+            read_last_journal_sequence(&recovered.journal_path).unwrap(),
+            2
+        );
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn valid_unterminated_crash_tail_is_preserved() {
+        let state_dir = temp_state_dir("journal-valid-tail");
+        fs::create_dir_all(&state_dir).unwrap();
+        let journal_path = state_dir.join("plant-events.ndjson");
+        let record = JournalRecord {
+            schema_version: JOURNAL_SCHEMA_VERSION,
+            sequence: 7,
+            wall_time_ms: 1,
+            plant_elapsed_sec: 1.0,
+            kind: "test".to_string(),
+            subject: "valid-tail".to_string(),
+            payload: serde_json::json!({}),
+        };
+        fs::write(&journal_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let recovered =
+            PlantPersistence::new(state_dir.clone(), "test-plant".to_string(), 60.0).unwrap();
+        let next = recovered
+            .append_journal(2.0, "test", "after-tail", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(next.sequence, 8);
+        let payload = fs::read(&journal_path).unwrap();
+        assert_eq!(payload.iter().filter(|byte| **byte == b'\n').count(), 2);
         fs::remove_dir_all(state_dir).unwrap();
     }
 }
