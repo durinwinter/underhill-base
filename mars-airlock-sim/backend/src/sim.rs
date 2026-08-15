@@ -306,7 +306,6 @@ impl Simulation {
                 if runtime.progress_pct >= 100.0 {
                     runtime.progress_pct = 100.0;
                     runtime.state = ProcedureState::Done;
-                    runtime.current_request_id = runtime.current_request_id; // keep same
                     runtime.completed_at_ms = now;
                     // stub result
                     runtime

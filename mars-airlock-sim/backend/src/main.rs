@@ -3,6 +3,7 @@ mod mqtt_uns;
 mod opcua;
 mod opcua_subsystems;
 mod pea_endpoint_host;
+mod plant_runtime;
 mod sim;
 mod subsystems;
 
@@ -16,7 +17,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 use axum::{
@@ -48,6 +48,7 @@ use tower_http::{
 use tracing::{error, info, warn};
 use zenoh::Session;
 
+use crate::plant_runtime::{PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler};
 use crate::sim::Simulation;
 use crate::subsystems::{EclssSimulation, EclssSnapshot, SabatierSimulation, SabatierSnapshot};
 
@@ -102,6 +103,7 @@ struct AppContext {
     node_id: String,
     snapshots_tx: broadcast::Sender<Snapshot>,
     systems_snapshots_tx: broadcast::Sender<SystemsSnapshot>,
+    plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
     opcua_control: opcua::OpcuaControl,
     next_client_id: Arc<AtomicU64>,
 }
@@ -187,6 +189,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let plant_runtime_config = PlantRuntimeConfig::from_env()?;
+    info!(
+        "Underhill plant runtime mode={:?} time_scale={} fixed_step_sec={} wall_tick_ms={}",
+        plant_runtime_config.mode(),
+        plant_runtime_config.time_scale,
+        plant_runtime_config.fixed_step_sec,
+        plant_runtime_config.wall_tick_ms
+    );
+
     let initial_security = std::env::var("AIRLOCK_SECURITY_PROFILE").unwrap_or("NONE".to_string());
     let forced_airlock_port = std::env::var("AIRLOCK_OPCUA_PORT")
         .ok()
@@ -239,13 +250,19 @@ async fn main() -> anyhow::Result<()> {
         opcua_endpoint_url.clone(),
     )));
     let node_id = std::env::var("MURPH_NODE_ID").unwrap_or_else(|_| DEFAULT_NODE_ID.to_string());
-    let zenoh_session = match open_zenoh_session().await {
-        Ok(session) => {
-            info!("Connected Underhill backend to Zenoh");
-            Some(Arc::new(session))
-        }
-        Err(err) => {
-            warn!("Zenoh unavailable, continuing without UNS publishing: {err}");
+    let zenoh_session = match std::env::var("ZENOH_ROUTER") {
+        Ok(endpoint) if !endpoint.trim().is_empty() => match open_zenoh_session().await {
+            Ok(session) => {
+                info!("Connected Underhill backend to Zenoh router {endpoint}");
+                Some(Arc::new(session))
+            }
+            Err(err) => {
+                warn!("Zenoh unavailable, continuing without Zenoh UNS publishing: {err}");
+                None
+            }
+        },
+        _ => {
+            info!("ZENOH_ROUTER is unset; Zenoh UNS publishing disabled");
             None
         }
     };
@@ -280,6 +297,7 @@ async fn main() -> anyhow::Result<()> {
     ]));
     let (snapshots_tx, _snapshots_rx) = broadcast::channel(256);
     let (systems_snapshots_tx, _systems_snapshots_rx) = broadcast::channel(256);
+    let plant_runtime = Arc::new(RwLock::new(PlantRuntimeSnapshot::new(plant_runtime_config)));
 
     let opcua_control =
         opcua::spawn_opcua_server(sim.clone(), snapshots_tx.clone(), opcua_runtime_config);
@@ -310,11 +328,12 @@ async fn main() -> anyhow::Result<()> {
         node_id,
         snapshots_tx,
         systems_snapshots_tx,
+        plant_runtime,
         opcua_control,
         next_client_id: Arc::new(AtomicU64::new(1)),
     };
 
-    spawn_simulation_task(context.clone());
+    spawn_simulation_task(context.clone(), plant_runtime_config);
 
     let frontend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../frontend");
     let index_file = frontend_dir.join("index.html");
@@ -429,41 +448,70 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_simulation_task(context: AppContext) {
+fn spawn_simulation_task(context: AppContext, runtime_config: PlantRuntimeConfig) {
     tokio::spawn(async move {
-        let mut ticker = time::interval(Duration::from_millis(50));
+        let mut scheduler = PlantScheduler::new(runtime_config);
+        let mut ticker = time::interval(scheduler.wall_tick_duration());
         let mut publish_divider: u64 = 0;
         let mut uns_divider: u64 = 0;
 
         loop {
             ticker.tick().await;
+            let steps_due = scheduler.begin_wall_tick();
+            if steps_due == 0 {
+                *context.plant_runtime.write().await = scheduler.snapshot();
+                continue;
+            }
+
             publish_divider = publish_divider.wrapping_add(1);
             uns_divider = uns_divider.wrapping_add(1);
 
-            let maybe_airlock_snapshot = {
-                let mut sim = context.sim.write().await;
-                sim.step(0.05);
-                if publish_divider.is_multiple_of(2) {
-                    Some(sim.snapshot())
-                } else {
-                    None
-                }
-            };
             let eclss_running = {
                 let runtime = context.eclss_runtime.read().await;
                 runtime.deployed && runtime.running
-            };
-            let eclss_snapshot = {
-                let mut sim = context.eclss_sim.write().await;
-                sim.step(0.05, eclss_running)
             };
             let sabatier_running = {
                 let runtime = context.sabatier_runtime.read().await;
                 runtime.deployed && runtime.running
             };
-            let sabatier_snapshot = {
-                let mut sim = context.sabatier_sim.write().await;
-                sim.step(0.05, sabatier_running, eclss_snapshot.co2_capture_kgph)
+
+            let mut eclss_snapshot = None;
+            let mut sabatier_snapshot = None;
+            for _ in 0..steps_due {
+                let scheduled = scheduler.advance_fixed_step();
+                let mut sim = context.sim.write().await;
+                sim.step(scheduled.fixed_step_sec);
+                drop(sim);
+
+                let latest_eclss = {
+                    let mut sim = context.eclss_sim.write().await;
+                    sim.step(scheduled.fixed_step_sec, eclss_running)
+                };
+                let latest_sabatier = {
+                    let mut sim = context.sabatier_sim.write().await;
+                    sim.step(
+                        scheduled.fixed_step_sec,
+                        sabatier_running,
+                        latest_eclss.co2_capture_kgph,
+                    )
+                };
+                eclss_snapshot = Some(latest_eclss);
+                sabatier_snapshot = Some(latest_sabatier);
+
+                // These deterministic boundaries are hooks for the forthcoming
+                // power/thermal and inventory/degradation model tiers.
+                let _cadence_boundary = (scheduled.run_medium, scheduled.run_slow);
+            }
+
+            *context.plant_runtime.write().await = scheduler.snapshot();
+            let eclss_snapshot = eclss_snapshot.expect("at least one fixed step was scheduled");
+            let sabatier_snapshot =
+                sabatier_snapshot.expect("at least one fixed step was scheduled");
+            let maybe_airlock_snapshot = if publish_divider.is_multiple_of(2) {
+                let sim = context.sim.read().await;
+                Some(sim.snapshot())
+            } else {
+                None
             };
 
             // Construct combined systems snapshot for 3D visualization frontend
@@ -555,10 +603,12 @@ fn spawn_simulation_task(context: AppContext) {
     });
 }
 
-async fn api_health() -> impl IntoResponse {
+async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
+    let plant_runtime = *context.plant_runtime.read().await;
     axum::Json(json!({
         "status": "ok",
-        "service": "mars-airlock-backend"
+        "service": "underhill-base-backend",
+        "plant_runtime": plant_runtime
     }))
 }
 

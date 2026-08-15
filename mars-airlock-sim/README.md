@@ -4,6 +4,8 @@ Standalone Underhill Base simulator with:
 - Rust backend (`backend/`)
 - Static web frontend (`frontend/`)
 - Deterministic simulation loop (`50 ms` default)
+- Continuous plant clock with live or accelerated fixed-step operation
+- Deterministic fast/medium/slow scheduler boundaries for continuous subsystem evolution
 - Writable request-variable command model with `Operator` and `Remote` channels
 - Staged subsystem writeback model for POL-driven `ECLSS` and `Sabatier` commands
 - MTP-aligned runtime model for three PEAs (`Airlock`, `ECLSS`, `Sabatier`)
@@ -72,6 +74,18 @@ Optional UNS/Zenoh env:
 - `UNS_MQTT_CLIENT_ID` (default: `underhill-uns-publisher`)
 - `UNS_MQTT_USERNAME` (optional)
 - `UNS_MQTT_PASSWORD` (optional)
+
+Continuous runtime env:
+- `UNDERHILL_TIME_SCALE` (default `1.0`; values above `1.0` accelerate plant time)
+- `UNDERHILL_WALL_TICK_MS` (default `50`; host scheduler wake-up period)
+- `UNDERHILL_MEDIUM_PERIOD_SEC` (default `1.0`)
+- `UNDERHILL_SLOW_PERIOD_SEC` (default `60.0`)
+- `UNDERHILL_MAX_STEPS_PER_WALL_TICK` (default `2000`; excess work remains visible as backlog)
+
+The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
+fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
+plant elapsed time, Mars sol, time scale, step index, and catch-up backlog. Full-state persistence
+and restart restoration are the next continuous-operations milestone.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`
