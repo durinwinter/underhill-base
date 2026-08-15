@@ -10,6 +10,7 @@ Standalone Underhill Base simulator with:
 - Staged subsystem writeback model for POL-driven `ECLSS` and `Sabatier` commands
 - MTP-aligned runtime model for six PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`, `Water`)
 - Native OPC UA servers via Rust crate `async-opcua` (one endpoint per PEA)
+- Validated shared PEA registry generating identity, type, service, namespace, endpoint-path, and i3X hierarchy metadata
 - UNS publishing over Zenoh and/or MQTT
 - i3X-compatible HTTP API (`/api/v1/*`)
 - Real-time WebSocket snapshots for UI

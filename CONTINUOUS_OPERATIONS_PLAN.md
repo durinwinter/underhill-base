@@ -276,6 +276,8 @@ Agents receive discoverable capabilities, timestamped telemetry with quality, hi
 
 Agents never bypass the safety kernel. Hot-swapping an agent or controller must not stop the plant. Qualification uses checkpoint-derived forks with the same command and telemetry interfaces as the live plant.
 
+Implementation status: the live PEA set now has a validated shared identity registry. Primary PEA discovery, i3X object composition and relationships, service lookup, UNS announcement identity, and OPC UA namespace metadata resolve from that contract. This removes a previously observed split-brain condition in which the primary API exposed six PEAs while the lower-level i3X object graph exposed only three. Runtime storage and lifecycle dispatch are still specialized per PEA and remain the next consolidation boundary.
+
 ## 11. Deployment without discontinuity
 
 State schemas and canonical tags are versioned from the beginning. Deployment supports:

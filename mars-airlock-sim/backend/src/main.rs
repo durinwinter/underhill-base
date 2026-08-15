@@ -5,7 +5,7 @@ mod model;
 mod mqtt_uns;
 mod opcua;
 mod opcua_subsystems;
-mod pea_endpoint_host;
+mod pea_registry;
 mod persistence;
 mod plant_runtime;
 mod sim;
@@ -54,6 +54,12 @@ use tracing::{error, info, warn};
 use zenoh::Session;
 
 use crate::historian::{Historian, NewHistorianSample, TelemetryQuality};
+use crate::pea_registry::{
+    ALL_PEA_DEFINITIONS, DEFAULT_AIRLOCK_PEA_ID, DEFAULT_ECLSS_PEA_ID, DEFAULT_POWER_PEA_ID,
+    DEFAULT_SABATIER_PEA_ID, DEFAULT_THERMAL_PEA_ID, DEFAULT_WATER_PEA_ID, ECLSS_SERVICE_TAG,
+    POWER_SERVICE_TAG, SABATIER_SERVICE_TAG, THERMAL_SERVICE_TAG, WATER_SERVICE_TAG,
+    definition_for,
+};
 use crate::persistence::{PlantCheckpoint, PlantPersistence, wall_time_ms};
 use crate::plant_runtime::{
     DowntimePolicy, PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler, PlantSchedulerState,
@@ -66,20 +72,8 @@ use crate::subsystems::{
 use crate::tag_catalog::{CanonicalTag, TagCatalog};
 
 const DEFAULT_NODE_ID: &str = "local";
-const DEFAULT_AIRLOCK_PEA_ID: &str = "AIRLOCK-PEA-001";
-const DEFAULT_ECLSS_PEA_ID: &str = "ECLSS-PEA-001";
-const DEFAULT_SABATIER_PEA_ID: &str = "SABATIER-PEA-001";
-const DEFAULT_POWER_PEA_ID: &str = "POWER-PEA-001";
-const DEFAULT_THERMAL_PEA_ID: &str = "THERMAL-PEA-001";
-const DEFAULT_WATER_PEA_ID: &str = "WATER-PEA-001";
 const DEFAULT_OPCUA_PORT_RANGE_MIN: u16 = 4841;
 const DEFAULT_OPCUA_PORT_RANGE_MAX: u16 = 4899;
-const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
-const ECLSS_SERVICE_TAG: &str = "EclssService";
-const SABATIER_SERVICE_TAG: &str = "SabatierService";
-const POWER_SERVICE_TAG: &str = "PowerService";
-const THERMAL_SERVICE_TAG: &str = "ThermalService";
-const WATER_SERVICE_TAG: &str = "WaterService";
 
 /// Combined WebSocket snapshot for 3D visualization frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1658,14 +1652,9 @@ async fn api_v1_get_pea_opcua(
         })));
     }
 
-    let namespace_uri = match pea_id.as_str() {
-        DEFAULT_ECLSS_PEA_ID => "urn:underhill:eclss:mtp",
-        DEFAULT_SABATIER_PEA_ID => "urn:underhill:sabatier:mtp",
-        DEFAULT_POWER_PEA_ID => "urn:underhill:power:mtp",
-        DEFAULT_THERMAL_PEA_ID => "urn:underhill:thermal:mtp",
-        DEFAULT_WATER_PEA_ID => "urn:underhill:water:mtp",
-        _ => return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}"))),
-    };
+    let namespace_uri = definition_for(&pea_id)
+        .map(|definition| definition.namespace_uri)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")))?;
     Ok(axum::Json(json!({
         "pea_id": pea_id,
         "endpoint_url": endpoint_url,
@@ -2784,11 +2773,8 @@ async fn api_v1_i3x_related_objects(
     let objects = i3x_object_instances();
 
     if element_id == "underhill-base" {
-        for pea_id in [
-            DEFAULT_AIRLOCK_PEA_ID,
-            DEFAULT_ECLSS_PEA_ID,
-            DEFAULT_SABATIER_PEA_ID,
-        ] {
+        for definition in ALL_PEA_DEFINITIONS {
+            let pea_id = definition.pea_id;
             if let Some(instance) = objects.iter().find(|obj| {
                 obj.get("elementId")
                     .and_then(serde_json::Value::as_str)
@@ -2863,7 +2849,7 @@ async fn api_v1_i3x_object_value(
             json!({
                 "name": "Underhill Base",
                 "node_id": context.node_id,
-                "pea_count": 3
+                "pea_count": ALL_PEA_DEFINITIONS.len()
             }),
             true,
         )
@@ -2904,6 +2890,30 @@ async fn api_v1_i3x_object_value(
             ),
             true,
         )
+    } else if element_id == DEFAULT_POWER_PEA_ID {
+        let runtime_state = *context.power_runtime.read().await;
+        let operator_state = context.power_operator_state.read().await.clone();
+        let snapshot = context.power_sim.read().await.snapshot();
+        (
+            build_power_pea_descriptor(&context, &snapshot, runtime_state, &operator_state),
+            true,
+        )
+    } else if element_id == DEFAULT_THERMAL_PEA_ID {
+        let runtime_state = *context.thermal_runtime.read().await;
+        let operator_state = context.thermal_operator_state.read().await.clone();
+        let snapshot = context.thermal_sim.read().await.snapshot();
+        (
+            build_thermal_pea_descriptor(&context, &snapshot, runtime_state, &operator_state),
+            true,
+        )
+    } else if element_id == DEFAULT_WATER_PEA_ID {
+        let runtime_state = *context.water_runtime.read().await;
+        let operator_state = context.water_operator_state.read().await.clone();
+        let snapshot = context.water_sim.read().await.snapshot();
+        (
+            build_water_pea_descriptor(&context, &snapshot, runtime_state, &operator_state),
+            true,
+        )
     } else if let Some((pea_id, service_tag)) = element_id.split_once(':') {
         let state = if pea_id == DEFAULT_AIRLOCK_PEA_ID {
             let snapshot = context.sim.read().await.snapshot();
@@ -2915,6 +2925,18 @@ async fn api_v1_i3x_object_value(
         } else if pea_id == DEFAULT_SABATIER_PEA_ID {
             let runtime = *context.sabatier_runtime.read().await;
             let operator_state = context.sabatier_operator_state.read().await.clone();
+            subsystem_service_state(runtime, &operator_state).to_string()
+        } else if pea_id == DEFAULT_POWER_PEA_ID {
+            let runtime = *context.power_runtime.read().await;
+            let operator_state = context.power_operator_state.read().await.clone();
+            subsystem_service_state(runtime, &operator_state).to_string()
+        } else if pea_id == DEFAULT_THERMAL_PEA_ID {
+            let runtime = *context.thermal_runtime.read().await;
+            let operator_state = context.thermal_operator_state.read().await.clone();
+            subsystem_service_state(runtime, &operator_state).to_string()
+        } else if pea_id == DEFAULT_WATER_PEA_ID {
+            let runtime = *context.water_runtime.read().await;
+            let operator_state = context.water_operator_state.read().await.clone();
             subsystem_service_state(runtime, &operator_state).to_string()
         } else {
             return Err((
@@ -2973,76 +2995,37 @@ async fn api_v1_i3x_put_object_value(
 }
 
 fn i3x_object_instances() -> Vec<serde_json::Value> {
-    vec![
-        json!({
-            "elementId": "underhill-base",
-            "displayName": "Underhill Base",
-            "typeId": "BaseEquipment",
-            "parentId": serde_json::Value::Null,
-            "isComposition": true,
-            "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-        json!({
-            "elementId": DEFAULT_AIRLOCK_PEA_ID,
-            "displayName": "Underhill Airlock",
+    let mut objects = vec![json!({
+        "elementId": "underhill-base",
+        "displayName": "Underhill Base",
+        "typeId": "BaseEquipment",
+        "parentId": serde_json::Value::Null,
+        "isComposition": true,
+        "namespaceUri": "https://underhill.murph/ns/pea"
+    })];
+    for definition in ALL_PEA_DEFINITIONS {
+        objects.push(json!({
+            "elementId": definition.pea_id,
+            "displayName": definition.name,
             "typeId": "PEAType",
             "parentId": "underhill-base",
             "isComposition": true,
             "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-        json!({
-            "elementId": format!("{DEFAULT_AIRLOCK_PEA_ID}:{AIRLOCK_SERVICE_TAG}"),
-            "displayName": AIRLOCK_SERVICE_TAG,
+        }));
+        objects.push(json!({
+            "elementId": format!("{}:{}", definition.pea_id, definition.service_tag),
+            "displayName": definition.service_tag,
             "typeId": "ServiceType",
-            "parentId": DEFAULT_AIRLOCK_PEA_ID,
+            "parentId": definition.pea_id,
             "isComposition": false,
             "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-        json!({
-            "elementId": DEFAULT_ECLSS_PEA_ID,
-            "displayName": "Underhill ECLSS",
-            "typeId": "PEAType",
-            "parentId": "underhill-base",
-            "isComposition": true,
-            "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-        json!({
-            "elementId": format!("{DEFAULT_ECLSS_PEA_ID}:{ECLSS_SERVICE_TAG}"),
-            "displayName": ECLSS_SERVICE_TAG,
-            "typeId": "ServiceType",
-            "parentId": DEFAULT_ECLSS_PEA_ID,
-            "isComposition": false,
-            "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-        json!({
-            "elementId": DEFAULT_SABATIER_PEA_ID,
-            "displayName": "Underhill Sabatier",
-            "typeId": "PEAType",
-            "parentId": "underhill-base",
-            "isComposition": true,
-            "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-        json!({
-            "elementId": format!("{DEFAULT_SABATIER_PEA_ID}:{SABATIER_SERVICE_TAG}"),
-            "displayName": SABATIER_SERVICE_TAG,
-            "typeId": "ServiceType",
-            "parentId": DEFAULT_SABATIER_PEA_ID,
-            "isComposition": false,
-            "namespaceUri": "https://underhill.murph/ns/pea"
-        }),
-    ]
+        }));
+    }
+    objects
 }
 
 fn service_tag_for_pea_id(pea_id: &str) -> Option<&'static str> {
-    match pea_id {
-        DEFAULT_AIRLOCK_PEA_ID => Some(AIRLOCK_SERVICE_TAG),
-        DEFAULT_ECLSS_PEA_ID => Some(ECLSS_SERVICE_TAG),
-        DEFAULT_SABATIER_PEA_ID => Some(SABATIER_SERVICE_TAG),
-        DEFAULT_POWER_PEA_ID => Some(POWER_SERVICE_TAG),
-        DEFAULT_THERMAL_PEA_ID => Some(THERMAL_SERVICE_TAG),
-        DEFAULT_WATER_PEA_ID => Some(WATER_SERVICE_TAG),
-        _ => None,
-    }
+    definition_for(pea_id).map(|definition| definition.service_tag)
 }
 
 fn with_relationship(
@@ -3730,14 +3713,13 @@ fn build_i3x_subsystem_descriptor<T: Serialize>(
         .get("timestamp_ms")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or_else(Simulation::now_ms);
-    let (pea_type, name) = match pea_id {
-        DEFAULT_ECLSS_PEA_ID => ("ECLSS", "Underhill ECLSS"),
-        DEFAULT_SABATIER_PEA_ID => ("ISRU_SABATIER", "Underhill Sabatier"),
-        DEFAULT_POWER_PEA_ID => ("POWER_MICROGRID", "Underhill Power Microgrid"),
-        DEFAULT_THERMAL_PEA_ID => ("THERMAL_CONTROL", "Underhill Thermal Control"),
-        DEFAULT_WATER_PEA_ID => ("WATER_WASTE_RECOVERY", "Underhill Water and Waste Recovery"),
-        _ => ("PROCESS_EQUIPMENT_ASSEMBLY", "Underhill PEA"),
-    };
+    let definition = definition_for(pea_id);
+    let pea_type = definition
+        .map(|definition| definition.pea_type)
+        .unwrap_or("PROCESS_EQUIPMENT_ASSEMBLY");
+    let name = definition
+        .map(|definition| definition.name)
+        .unwrap_or("Underhill PEA");
     let uns_namespace = format!(
         "murph/habitat/nodes/{}/pea/{pea_id}",
         context.node_id.as_str()
@@ -4093,7 +4075,7 @@ async fn publish_subsystem_uns(
     let state_code = subsystem_packml_state_code(service_state);
     let announce_payload = json!({
         "pea_id": pea_id,
-        "name": if pea_id == DEFAULT_ECLSS_PEA_ID { "Underhill ECLSS" } else { "Underhill Sabatier" },
+        "name": definition_for(pea_id).map(|definition| definition.name).unwrap_or("Underhill PEA"),
         "version": "0.1.0",
         "services": [{
             "tag": service_tag,
