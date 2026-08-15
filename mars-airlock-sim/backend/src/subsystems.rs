@@ -62,6 +62,30 @@ pub struct PowerSnapshot {
     pub instantaneous_balance_error_kw: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ThermalSnapshot {
+    pub timestamp_ms: u64,
+    pub sim_time_sec: f64,
+    pub mars_ambient_temp_c: f64,
+    pub habitat_temp_c: f64,
+    pub coolant_supply_temp_c: f64,
+    pub coolant_return_temp_c: f64,
+    pub coolant_flow_kg_s: f64,
+    pub radiator_deployment_pct: f64,
+    pub equipment_heat_load_kw: f64,
+    pub heater_power_kw: f64,
+    pub heat_rejection_kw: f64,
+    pub pump_electric_power_kw: f64,
+    pub stored_thermal_energy_mj: f64,
+    pub cumulative_heat_load_kwh: f64,
+    pub cumulative_heat_rejected_kwh: f64,
+    pub instantaneous_balance_error_kw: f64,
+    pub alarm_habitat_hot: bool,
+    pub alarm_habitat_cold: bool,
+    pub alarm_coolant_hot: bool,
+    pub cooling_available: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSimulation {
     sim_time_sec: f64,
@@ -140,6 +164,7 @@ impl PowerSimulation {
         dt_sec: f64,
         running: bool,
         eclss_load_kw: f64,
+        thermal_load_kw: f64,
         sabatier_load_kw: f64,
         airlock_load_kw: f64,
     ) -> PowerSnapshot {
@@ -161,7 +186,8 @@ impl PowerSimulation {
         };
         self.generation_kw = self.solar_available_kw + self.fission_available_kw;
 
-        self.critical_load_kw = 18.0 + eclss_load_kw.max(0.0) + airlock_load_kw.max(0.0);
+        self.critical_load_kw =
+            18.0 + eclss_load_kw.max(0.0) + thermal_load_kw.max(0.0) + airlock_load_kw.max(0.0);
         self.flexible_load_kw = 8.0 + sabatier_load_kw.max(0.0);
         let battery_soc_pct = self.battery_soc_pct();
         self.load_shed_active = battery_soc_pct < 12.0 || self.bus_voltage_v < 360.0;
@@ -278,6 +304,171 @@ impl PowerSimulation {
             "ServiceSet/PowerService/DataAssemblies/Indicators".to_string(),
             "ServiceSet/PowerService/DataAssemblies/Parameters".to_string(),
         ]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThermalSimulation {
+    sim_time_sec: f64,
+    thermal_capacity_mj_per_c: f64,
+    stored_thermal_energy_mj: f64,
+    mars_ambient_temp_c: f64,
+    coolant_supply_temp_c: f64,
+    coolant_return_temp_c: f64,
+    coolant_flow_kg_s: f64,
+    radiator_deployment_pct: f64,
+    equipment_heat_load_kw: f64,
+    heater_power_kw: f64,
+    heat_rejection_kw: f64,
+    pump_electric_power_kw: f64,
+    cumulative_heat_load_kwh: f64,
+    cumulative_heat_rejected_kwh: f64,
+    instantaneous_balance_error_kw: f64,
+}
+
+impl ThermalSimulation {
+    pub fn new() -> Self {
+        let thermal_capacity_mj_per_c = 25.0;
+        Self {
+            sim_time_sec: 0.0,
+            thermal_capacity_mj_per_c,
+            stored_thermal_energy_mj: thermal_capacity_mj_per_c * 22.0,
+            mars_ambient_temp_c: -63.0,
+            coolant_supply_temp_c: 18.0,
+            coolant_return_temp_c: 24.0,
+            coolant_flow_kg_s: 2.5,
+            radiator_deployment_pct: 35.0,
+            equipment_heat_load_kw: 24.0,
+            heater_power_kw: 0.0,
+            heat_rejection_kw: 24.0,
+            pump_electric_power_kw: 4.0,
+            cumulative_heat_load_kwh: 0.0,
+            cumulative_heat_rejected_kwh: 0.0,
+            instantaneous_balance_error_kw: 0.0,
+        }
+    }
+
+    pub fn step(
+        &mut self,
+        dt_sec: f64,
+        running: bool,
+        power_available: bool,
+        eclss_electric_kw: f64,
+        sabatier_electric_kw: f64,
+        served_base_electric_kw: f64,
+    ) -> ThermalSnapshot {
+        self.sim_time_sec += dt_sec;
+        let sol_fraction = (self.sim_time_sec % MARS_SOL_SEC) / MARS_SOL_SEC;
+        self.mars_ambient_temp_c = -63.0 + 25.0 * (std::f64::consts::TAU * sol_fraction).cos();
+        let habitat_temp_c = self.habitat_temp_c();
+        self.equipment_heat_load_kw = 10.0
+            + 0.85 * eclss_electric_kw.max(0.0)
+            + 0.90 * sabatier_electric_kw.max(0.0)
+            + 0.06 * served_base_electric_kw.max(0.0);
+
+        let cooling_available = running && power_available;
+        let target_flow = if cooling_available { 2.5 } else { 0.0 };
+        self.coolant_flow_kg_s = first_order(self.coolant_flow_kg_s, target_flow, 0.35, dt_sec);
+        let desired_deployment = if cooling_available {
+            (20.0 + (habitat_temp_c - 20.0) * 10.0).clamp(10.0, 100.0)
+        } else {
+            0.0
+        };
+        self.radiator_deployment_pct = first_order(
+            self.radiator_deployment_pct,
+            desired_deployment,
+            0.08,
+            dt_sec,
+        );
+        self.heater_power_kw = if cooling_available {
+            ((18.0 - habitat_temp_c) * 8.0).clamp(0.0, 25.0)
+        } else {
+            0.0
+        };
+        let active_rejection = (habitat_temp_c - self.mars_ambient_temp_c).max(0.0)
+            * 0.45
+            * (self.radiator_deployment_pct / 100.0)
+            * (self.coolant_flow_kg_s / 2.5).clamp(0.0, 1.0);
+        let passive_rejection = (habitat_temp_c - self.mars_ambient_temp_c).max(0.0) * 0.025;
+        self.heat_rejection_kw = (active_rejection + passive_rejection).clamp(0.0, 65.0);
+        self.pump_electric_power_kw = if cooling_available {
+            1.5 + self.coolant_flow_kg_s * 0.9
+        } else {
+            0.0
+        };
+
+        let opening_energy_mj = self.stored_thermal_energy_mj;
+        let net_heat_kw =
+            self.equipment_heat_load_kw + self.heater_power_kw - self.heat_rejection_kw;
+        self.stored_thermal_energy_mj += net_heat_kw * dt_sec / 1_000.0;
+        let closing_temp_c = self.habitat_temp_c();
+        self.coolant_return_temp_c = first_order(
+            self.coolant_return_temp_c,
+            closing_temp_c + 4.0 + self.equipment_heat_load_kw * 0.08,
+            0.18,
+            dt_sec,
+        );
+        self.coolant_supply_temp_c = first_order(
+            self.coolant_supply_temp_c,
+            if cooling_available {
+                closing_temp_c - 4.0
+            } else {
+                closing_temp_c
+            },
+            0.18,
+            dt_sec,
+        );
+        self.cumulative_heat_load_kwh +=
+            (self.equipment_heat_load_kw + self.heater_power_kw) * dt_sec / 3_600.0;
+        self.cumulative_heat_rejected_kwh += self.heat_rejection_kw * dt_sec / 3_600.0;
+        let stored_delta_kw =
+            (self.stored_thermal_energy_mj - opening_energy_mj) * 1_000.0 / dt_sec;
+        self.instantaneous_balance_error_kw = self.equipment_heat_load_kw + self.heater_power_kw
+            - self.heat_rejection_kw
+            - stored_delta_kw;
+        self.snapshot()
+    }
+
+    pub fn snapshot(&self) -> ThermalSnapshot {
+        let habitat_temp_c = self.habitat_temp_c();
+        let cooling_available = self.coolant_flow_kg_s > 0.5;
+        ThermalSnapshot {
+            timestamp_ms: now_ms(),
+            sim_time_sec: self.sim_time_sec,
+            mars_ambient_temp_c: self.mars_ambient_temp_c,
+            habitat_temp_c,
+            coolant_supply_temp_c: self.coolant_supply_temp_c,
+            coolant_return_temp_c: self.coolant_return_temp_c,
+            coolant_flow_kg_s: self.coolant_flow_kg_s,
+            radiator_deployment_pct: self.radiator_deployment_pct,
+            equipment_heat_load_kw: self.equipment_heat_load_kw,
+            heater_power_kw: self.heater_power_kw,
+            heat_rejection_kw: self.heat_rejection_kw,
+            pump_electric_power_kw: self.pump_electric_power_kw,
+            stored_thermal_energy_mj: self.stored_thermal_energy_mj,
+            cumulative_heat_load_kwh: self.cumulative_heat_load_kwh,
+            cumulative_heat_rejected_kwh: self.cumulative_heat_rejected_kwh,
+            instantaneous_balance_error_kw: self.instantaneous_balance_error_kw,
+            alarm_habitat_hot: habitat_temp_c > 30.0,
+            alarm_habitat_cold: habitat_temp_c < 15.0,
+            alarm_coolant_hot: self.coolant_return_temp_c > 45.0,
+            cooling_available,
+        }
+    }
+
+    pub fn mtp_nodes(&self) -> Vec<String> {
+        vec![
+            "ServiceSet/ThermalService/ServiceInformation".to_string(),
+            "ServiceSet/ThermalService/Modes".to_string(),
+            "ServiceSet/ThermalService/StateMachine".to_string(),
+            "ServiceSet/ThermalService/DataAssemblies/Indicators".to_string(),
+            "ServiceSet/ThermalService/DataAssemblies/Parameters".to_string(),
+            "ServiceSet/ThermalService/DataAssemblies/Alarms".to_string(),
+        ]
+    }
+
+    fn habitat_temp_c(&self) -> f64 {
+        self.stored_thermal_energy_mj / self.thermal_capacity_mj_per_c
     }
 }
 
@@ -499,7 +690,7 @@ mod tests {
     fn power_balance_closes_each_step() {
         let mut power = PowerSimulation::new();
         for _ in 0..10_000 {
-            let snapshot = power.step(0.05, true, 12.0, 5.0, 2.0);
+            let snapshot = power.step(0.05, true, 12.0, 4.0, 5.0, 2.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-9);
             assert!(snapshot.battery_energy_kwh >= 0.0);
             assert!(snapshot.battery_energy_kwh <= 500.0);
@@ -511,7 +702,7 @@ mod tests {
         let mut power = PowerSimulation::new();
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         let opening_energy = power.battery_energy_kwh;
-        let snapshot = power.step(60.0, true, 12.0, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 5.0, 2.0);
         assert_eq!(snapshot.solar_available_kw, 0.0);
         assert!(snapshot.battery_power_kw < 0.0);
         assert!(snapshot.battery_energy_kwh < opening_energy);
@@ -524,7 +715,7 @@ mod tests {
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         power.fission_capacity_kw = 0.0;
         power.battery_energy_kwh = 0.0;
-        let snapshot = power.step(60.0, true, 12.0, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 5.0, 2.0);
         assert!(snapshot.load_shed_active);
         assert_eq!(snapshot.flexible_load_kw, 13.0);
         assert_eq!(snapshot.requested_load_kw, snapshot.critical_load_kw);
@@ -538,7 +729,7 @@ mod tests {
     fn power_state_round_trip_preserves_energy_and_integrals() {
         let mut power = PowerSimulation::new();
         for _ in 0..100 {
-            power.step(1.0, true, 11.0, 4.0, 1.0);
+            power.step(1.0, true, 11.0, 4.0, 4.0, 1.0);
         }
         let restored: PowerSimulation =
             serde_json::from_slice(&serde_json::to_vec(&power).unwrap()).unwrap();
@@ -550,5 +741,51 @@ mod tests {
             before.cumulative_generated_kwh
         );
         assert_eq!(after.cumulative_served_kwh, before.cumulative_served_kwh);
+    }
+
+    #[test]
+    fn thermal_energy_balance_closes_each_step() {
+        let mut thermal = ThermalSimulation::new();
+        for _ in 0..20_000 {
+            let snapshot = thermal.step(0.05, true, true, 12.0, 5.0, 45.0);
+            assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-8);
+            assert!(snapshot.stored_thermal_energy_mj.is_finite());
+        }
+    }
+
+    #[test]
+    fn loss_of_active_cooling_eventually_overheats_habitat() {
+        let mut thermal = ThermalSimulation::new();
+        for _ in 0..20_000 {
+            thermal.step(1.0, false, false, 15.0, 6.0, 50.0);
+        }
+        let snapshot = thermal.snapshot();
+        assert!(snapshot.habitat_temp_c > 30.0);
+        assert!(snapshot.alarm_habitat_hot);
+        assert!(!snapshot.cooling_available);
+    }
+
+    #[test]
+    fn thermal_state_round_trip_preserves_energy_ledger() {
+        let mut thermal = ThermalSimulation::new();
+        for _ in 0..100 {
+            thermal.step(1.0, true, true, 12.0, 5.0, 45.0);
+        }
+        let restored: ThermalSimulation =
+            serde_json::from_slice(&serde_json::to_vec(&thermal).unwrap()).unwrap();
+        let before = thermal.snapshot();
+        let after = restored.snapshot();
+        assert_eq!(
+            before.stored_thermal_energy_mj,
+            after.stored_thermal_energy_mj
+        );
+        assert_eq!(
+            before.cumulative_heat_load_kwh,
+            after.cumulative_heat_load_kwh
+        );
+        assert_eq!(
+            before.cumulative_heat_rejected_kwh,
+            after.cumulative_heat_rejected_kwh
+        );
     }
 }

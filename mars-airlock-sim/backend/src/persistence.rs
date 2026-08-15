@@ -15,7 +15,7 @@ use crate::{
     PeaRuntimeState, SubsystemOperatorState,
     plant_runtime::PlantSchedulerState,
     sim::Simulation,
-    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation},
+    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation, ThermalSimulation},
 };
 
 pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
@@ -37,15 +37,21 @@ pub struct PlantCheckpoint {
     pub sabatier: SabatierSimulation,
     #[serde(default = "PowerSimulation::new")]
     pub power: PowerSimulation,
+    #[serde(default = "ThermalSimulation::new")]
+    pub thermal: ThermalSimulation,
     pub airlock_runtime: PeaRuntimeState,
     pub eclss_runtime: PeaRuntimeState,
     pub sabatier_runtime: PeaRuntimeState,
     #[serde(default = "default_running_runtime")]
     pub power_runtime: PeaRuntimeState,
+    #[serde(default = "default_running_runtime")]
+    pub thermal_runtime: PeaRuntimeState,
     pub eclss_operator_state: SubsystemOperatorState,
     pub sabatier_operator_state: SubsystemOperatorState,
     #[serde(default)]
     pub power_operator_state: SubsystemOperatorState,
+    #[serde(default)]
+    pub thermal_operator_state: SubsystemOperatorState,
 }
 
 impl PlantCheckpoint {
@@ -58,13 +64,16 @@ impl PlantCheckpoint {
         eclss: EclssSimulation,
         sabatier: SabatierSimulation,
         power: PowerSimulation,
+        thermal: ThermalSimulation,
         airlock_runtime: PeaRuntimeState,
         eclss_runtime: PeaRuntimeState,
         sabatier_runtime: PeaRuntimeState,
         power_runtime: PeaRuntimeState,
+        thermal_runtime: PeaRuntimeState,
         eclss_operator_state: SubsystemOperatorState,
         sabatier_operator_state: SubsystemOperatorState,
         power_operator_state: SubsystemOperatorState,
+        thermal_operator_state: SubsystemOperatorState,
     ) -> Self {
         Self {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
@@ -76,13 +85,16 @@ impl PlantCheckpoint {
             eclss,
             sabatier,
             power,
+            thermal,
             airlock_runtime,
             eclss_runtime,
             sabatier_runtime,
             power_runtime,
+            thermal_runtime,
             eclss_operator_state,
             sabatier_operator_state,
             power_operator_state,
+            thermal_operator_state,
         }
     }
 
@@ -474,6 +486,7 @@ mod tests {
             EclssSimulation::new(),
             SabatierSimulation::new(),
             PowerSimulation::new(),
+            ThermalSimulation::new(),
             PeaRuntimeState {
                 deployed: true,
                 running: true,
@@ -494,6 +507,12 @@ mod tests {
                 running: true,
                 last_transition_ms: 4,
             },
+            PeaRuntimeState {
+                deployed: true,
+                running: true,
+                last_transition_ms: 5,
+            },
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),

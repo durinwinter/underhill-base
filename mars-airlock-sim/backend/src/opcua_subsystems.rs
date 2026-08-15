@@ -15,7 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     PeaRuntimeState,
-    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation},
+    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation, ThermalSimulation},
 };
 
 #[derive(Clone, Debug)]
@@ -123,6 +123,29 @@ struct PowerNodes {
     balance_error_kw: NodeId,
 }
 
+#[derive(Clone)]
+struct ThermalNodes {
+    endpoint_url: NodeId,
+    security_mode: NodeId,
+    service_state: NodeId,
+    deployed: NodeId,
+    running: NodeId,
+    ambient_temp_c: NodeId,
+    habitat_temp_c: NodeId,
+    coolant_supply_temp_c: NodeId,
+    coolant_return_temp_c: NodeId,
+    coolant_flow_kg_s: NodeId,
+    radiator_deployment_pct: NodeId,
+    heat_load_kw: NodeId,
+    heat_rejection_kw: NodeId,
+    pump_power_kw: NodeId,
+    balance_error_kw: NodeId,
+    cooling_available: NodeId,
+    alarm_habitat_hot: NodeId,
+    alarm_habitat_cold: NodeId,
+    alarm_coolant_hot: NodeId,
+}
+
 pub fn spawn_eclss_opcua_server(
     sim: Arc<RwLock<EclssSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
@@ -182,6 +205,27 @@ pub fn spawn_power_opcua_server(
     tokio::spawn(async move {
         if let Err(err) = run_power_opcua_server(sim, runtime, config).await {
             error!("Power OPC UA server exited with error: {err}");
+        }
+    });
+}
+
+pub fn spawn_thermal_opcua_server(
+    sim: Arc<RwLock<ThermalSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    port: u16,
+    security_profile: String,
+) {
+    let config = SubsystemOpcuaConfig::new(
+        port,
+        "/underhill/thermal",
+        "./pki/thermal",
+        security_profile,
+        "Underhill Thermal OPC UA Server",
+        "urn:underhill:thermal:opcua-server",
+    );
+    tokio::spawn(async move {
+        if let Err(err) = run_thermal_opcua_server(sim, runtime, config).await {
+            error!("Thermal OPC UA server exited with error: {err}");
         }
     });
 }
@@ -503,6 +547,120 @@ async fn run_power_opcua_server(
         }
     });
 
+    run_server(server, &config).await?;
+    handle.cancel();
+    let _ = sync_task.await;
+    Ok(())
+}
+
+async fn run_thermal_opcua_server(
+    sim: Arc<RwLock<ThermalSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    config: SubsystemOpcuaConfig,
+) -> anyhow::Result<()> {
+    let namespace_uri = "urn:underhill:thermal:mtp";
+    let (server, handle) = build_server(&config, namespace_uri)?;
+    let manager = handle
+        .node_managers()
+        .get_of_type::<SimpleNodeManager>()
+        .ok_or_else(|| anyhow::anyhow!("SimpleNodeManager not available for Thermal"))?;
+    let ns = handle
+        .get_namespace_index(namespace_uri)
+        .ok_or_else(|| anyhow::anyhow!("Namespace index unavailable for Thermal"))?;
+    let nodes = build_thermal_address_space(ns, &manager);
+    let subscriptions = handle.subscriptions().clone();
+    let server_handle = handle.clone();
+    let endpoint_url = config.endpoint_url();
+    let security_profile = config.security_profile.clone();
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = server_handle.token().cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            let snapshot = sim.read().await.snapshot();
+            let runtime_state = *runtime.read().await;
+            let values = vec![
+                (
+                    &nodes.endpoint_url,
+                    DataValue::new_now(endpoint_url.clone()),
+                ),
+                (
+                    &nodes.security_mode,
+                    DataValue::new_now(security_profile.clone()),
+                ),
+                (
+                    &nodes.service_state,
+                    DataValue::new_now(state_for_runtime(runtime_state)),
+                ),
+                (&nodes.deployed, DataValue::new_now(runtime_state.deployed)),
+                (&nodes.running, DataValue::new_now(runtime_state.running)),
+                (
+                    &nodes.ambient_temp_c,
+                    DataValue::new_now(snapshot.mars_ambient_temp_c),
+                ),
+                (
+                    &nodes.habitat_temp_c,
+                    DataValue::new_now(snapshot.habitat_temp_c),
+                ),
+                (
+                    &nodes.coolant_supply_temp_c,
+                    DataValue::new_now(snapshot.coolant_supply_temp_c),
+                ),
+                (
+                    &nodes.coolant_return_temp_c,
+                    DataValue::new_now(snapshot.coolant_return_temp_c),
+                ),
+                (
+                    &nodes.coolant_flow_kg_s,
+                    DataValue::new_now(snapshot.coolant_flow_kg_s),
+                ),
+                (
+                    &nodes.radiator_deployment_pct,
+                    DataValue::new_now(snapshot.radiator_deployment_pct),
+                ),
+                (
+                    &nodes.heat_load_kw,
+                    DataValue::new_now(snapshot.equipment_heat_load_kw),
+                ),
+                (
+                    &nodes.heat_rejection_kw,
+                    DataValue::new_now(snapshot.heat_rejection_kw),
+                ),
+                (
+                    &nodes.pump_power_kw,
+                    DataValue::new_now(snapshot.pump_electric_power_kw),
+                ),
+                (
+                    &nodes.balance_error_kw,
+                    DataValue::new_now(snapshot.instantaneous_balance_error_kw),
+                ),
+                (
+                    &nodes.cooling_available,
+                    DataValue::new_now(snapshot.cooling_available),
+                ),
+                (
+                    &nodes.alarm_habitat_hot,
+                    DataValue::new_now(snapshot.alarm_habitat_hot),
+                ),
+                (
+                    &nodes.alarm_habitat_cold,
+                    DataValue::new_now(snapshot.alarm_habitat_cold),
+                ),
+                (
+                    &nodes.alarm_coolant_hot,
+                    DataValue::new_now(snapshot.alarm_coolant_hot),
+                ),
+            ];
+            if let Err(err) = manager.set_values(
+                &subscriptions,
+                values.into_iter().map(|(node, value)| (node, None, value)),
+            ) {
+                warn!("Failed updating Thermal OPC UA values: {err}");
+            }
+        }
+    });
     run_server(server, &config).await?;
     handle.cancel();
     let _ = sync_task.await;
@@ -1193,6 +1351,156 @@ fn build_power_address_space(
         alarm_battery_low,
         alarm_bus_undervoltage,
         balance_error_kw,
+    }
+}
+
+fn build_thermal_address_space(
+    ns: u16,
+    manager: &Arc<opcua::server::node_manager::memory::InMemoryNodeManager<SimpleNodeManagerImpl>>,
+) -> ThermalNodes {
+    let underhill = NodeId::new(ns, "Underhill");
+    let pea = NodeId::new(ns, "Underhill.ThermalPEA");
+    let diagnostics = NodeId::new(ns, "Underhill.ThermalPEA.Diagnostics");
+    let services = NodeId::new(ns, "Underhill.ThermalPEA.Services");
+    let service = NodeId::new(ns, "Underhill.ThermalPEA.Services.ThermalService");
+    let control = NodeId::new(
+        ns,
+        "Underhill.ThermalPEA.Services.ThermalService.ServiceControl",
+    );
+    let data = NodeId::new(ns, "Underhill.ThermalPEA.DataAssemblies");
+    let indicators = NodeId::new(ns, "Underhill.ThermalPEA.DataAssemblies.Indicators");
+    let alarms = NodeId::new(ns, "Underhill.ThermalPEA.DataAssemblies.Alarms");
+    let mut space = manager.address_space().write();
+    space.add_folder(
+        &underhill,
+        "Underhill",
+        "Underhill",
+        &NodeId::objects_folder_id(),
+    );
+    space.add_folder(&pea, "ThermalPEA", "ThermalPEA", &underhill);
+    for (node, browse, parent) in [
+        (&diagnostics, "Diagnostics", &pea),
+        (&services, "Services", &pea),
+        (&service, "ThermalService", &services),
+        (&control, "ServiceControl", &service),
+        (&data, "DataAssemblies", &pea),
+        (&indicators, "Indicators", &data),
+        (&alarms, "Alarms", &data),
+    ] {
+        space.add_folder(node, browse, browse, parent);
+    }
+    let node = |suffix: &str| NodeId::new(ns, format!("Underhill.ThermalPEA.{suffix}"));
+    let endpoint_url = node("Diagnostics.EndpointUrl");
+    let security_mode = node("Diagnostics.SecurityMode");
+    let service_state = node("Services.ThermalService.ServiceControl.State");
+    let deployed = node("Services.ThermalService.ServiceControl.Deployed");
+    let running = node("Services.ThermalService.ServiceControl.Running");
+    let ambient_temp_c = node("DataAssemblies.Indicators.MarsAmbientTempC");
+    let habitat_temp_c = node("DataAssemblies.Indicators.HabitatTempC");
+    let coolant_supply_temp_c = node("DataAssemblies.Indicators.CoolantSupplyTempC");
+    let coolant_return_temp_c = node("DataAssemblies.Indicators.CoolantReturnTempC");
+    let coolant_flow_kg_s = node("DataAssemblies.Indicators.CoolantFlowKgS");
+    let radiator_deployment_pct = node("DataAssemblies.Indicators.RadiatorDeploymentPct");
+    let heat_load_kw = node("DataAssemblies.Indicators.HeatLoadKw");
+    let heat_rejection_kw = node("DataAssemblies.Indicators.HeatRejectionKw");
+    let pump_power_kw = node("DataAssemblies.Indicators.PumpPowerKw");
+    let balance_error_kw = node("Diagnostics.InstantaneousBalanceErrorKw");
+    let cooling_available = node("DataAssemblies.Alarms.CoolingAvailable");
+    let alarm_habitat_hot = node("DataAssemblies.Alarms.HabitatHot");
+    let alarm_habitat_cold = node("DataAssemblies.Alarms.HabitatCold");
+    let alarm_coolant_hot = node("DataAssemblies.Alarms.CoolantHot");
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &endpoint_url,
+        "EndpointUrl",
+        "",
+        false,
+    );
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &security_mode,
+        "SecurityMode",
+        "NONE",
+        false,
+    );
+    insert_var(&mut space, &control, &service_state, "State", "Idle", false);
+    insert_var(&mut space, &control, &deployed, "Deployed", true, false);
+    insert_var(&mut space, &control, &running, "Running", true, false);
+    for (id, browse) in [
+        (&ambient_temp_c, "MarsAmbientTempC"),
+        (&habitat_temp_c, "HabitatTempC"),
+        (&coolant_supply_temp_c, "CoolantSupplyTempC"),
+        (&coolant_return_temp_c, "CoolantReturnTempC"),
+        (&coolant_flow_kg_s, "CoolantFlowKgS"),
+        (&radiator_deployment_pct, "RadiatorDeploymentPct"),
+        (&heat_load_kw, "HeatLoadKw"),
+        (&heat_rejection_kw, "HeatRejectionKw"),
+        (&pump_power_kw, "PumpPowerKw"),
+    ] {
+        insert_var(&mut space, &indicators, id, browse, 0.0f64, false);
+    }
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &balance_error_kw,
+        "InstantaneousBalanceErrorKw",
+        0.0f64,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &cooling_available,
+        "CoolingAvailable",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_habitat_hot,
+        "HabitatHot",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_habitat_cold,
+        "HabitatCold",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_coolant_hot,
+        "CoolantHot",
+        false,
+        false,
+    );
+    ThermalNodes {
+        endpoint_url,
+        security_mode,
+        service_state,
+        deployed,
+        running,
+        ambient_temp_c,
+        habitat_temp_c,
+        coolant_supply_temp_c,
+        coolant_return_temp_c,
+        coolant_flow_kg_s,
+        radiator_deployment_pct,
+        heat_load_kw,
+        heat_rejection_kw,
+        pump_power_kw,
+        balance_error_kw,
+        cooling_available,
+        alarm_habitat_hot,
+        alarm_habitat_cold,
+        alarm_coolant_hot,
     }
 }
 

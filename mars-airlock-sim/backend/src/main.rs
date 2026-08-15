@@ -61,7 +61,7 @@ use crate::plant_runtime::{
 use crate::sim::Simulation;
 use crate::subsystems::{
     EclssSimulation, EclssSnapshot, PowerSimulation, PowerSnapshot, SabatierSimulation,
-    SabatierSnapshot,
+    SabatierSnapshot, ThermalSimulation, ThermalSnapshot,
 };
 use crate::tag_catalog::{CanonicalTag, TagCatalog};
 
@@ -70,12 +70,14 @@ const DEFAULT_AIRLOCK_PEA_ID: &str = "AIRLOCK-PEA-001";
 const DEFAULT_ECLSS_PEA_ID: &str = "ECLSS-PEA-001";
 const DEFAULT_SABATIER_PEA_ID: &str = "SABATIER-PEA-001";
 const DEFAULT_POWER_PEA_ID: &str = "POWER-PEA-001";
+const DEFAULT_THERMAL_PEA_ID: &str = "THERMAL-PEA-001";
 const DEFAULT_OPCUA_PORT_RANGE_MIN: u16 = 4841;
 const DEFAULT_OPCUA_PORT_RANGE_MAX: u16 = 4899;
 const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
 const ECLSS_SERVICE_TAG: &str = "EclssService";
 const SABATIER_SERVICE_TAG: &str = "SabatierService";
 const POWER_SERVICE_TAG: &str = "PowerService";
+const THERMAL_SERVICE_TAG: &str = "ThermalService";
 
 /// Combined WebSocket snapshot for 3D visualization frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,9 @@ struct SystemsSnapshot {
     battery_soc_pct: f64,
     dc_bus_voltage_v: f64,
     power_load_shed_active: bool,
+    habitat_temp_c: f64,
+    thermal_heat_rejection_kw: f64,
+    thermal_cooling_available: bool,
     // Status
     healthy: bool,
 }
@@ -125,12 +130,15 @@ struct AppContext {
     eclss_runtime: Arc<RwLock<PeaRuntimeState>>,
     sabatier_runtime: Arc<RwLock<PeaRuntimeState>>,
     power_runtime: Arc<RwLock<PeaRuntimeState>>,
+    thermal_runtime: Arc<RwLock<PeaRuntimeState>>,
     eclss_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     sabatier_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     power_operator_state: Arc<RwLock<SubsystemOperatorState>>,
+    thermal_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     eclss_sim: Arc<RwLock<EclssSimulation>>,
     sabatier_sim: Arc<RwLock<SabatierSimulation>>,
     power_sim: Arc<RwLock<PowerSimulation>>,
+    thermal_sim: Arc<RwLock<ThermalSimulation>>,
     pea_opcua_endpoints: Arc<HashMap<String, String>>,
     zenoh_session: Option<Arc<Session>>,
     mqtt_uns: Option<Arc<mqtt_uns::MqttUnsPublisher>>,
@@ -297,11 +305,20 @@ async fn main() -> anyhow::Result<()> {
             })
         })
         .transpose()?;
+    let forced_thermal_port = std::env::var("THERMAL_OPCUA_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("Invalid THERMAL_OPCUA_PORT value {value}; expected integer")
+            })
+        })
+        .transpose()?;
 
     let airlock_port = allocate_opcua_port_for_pea(DEFAULT_AIRLOCK_PEA_ID, forced_airlock_port)?;
     let eclss_port = allocate_opcua_port_for_pea(DEFAULT_ECLSS_PEA_ID, forced_eclss_port)?;
     let sabatier_port = allocate_opcua_port_for_pea(DEFAULT_SABATIER_PEA_ID, forced_sabatier_port)?;
     let power_port = allocate_opcua_port_for_pea(DEFAULT_POWER_PEA_ID, forced_power_port)?;
+    let thermal_port = allocate_opcua_port_for_pea(DEFAULT_THERMAL_PEA_ID, forced_thermal_port)?;
 
     let opcua_runtime_config = opcua::OpcuaRuntimeConfig::from_env_with_port(airlock_port);
     let opcua_endpoint_url = opcua_runtime_config.endpoint_url();
@@ -310,6 +327,8 @@ async fn main() -> anyhow::Result<()> {
     let sabatier_endpoint_url =
         build_opcua_endpoint_url(&opcua_host, sabatier_port, "/underhill/sabatier");
     let power_endpoint_url = build_opcua_endpoint_url(&opcua_host, power_port, "/underhill/power");
+    let thermal_endpoint_url =
+        build_opcua_endpoint_url(&opcua_host, thermal_port, "/underhill/thermal");
     info!(
         "Allocated OPC UA port {} for {} (endpoint {})",
         opcua_runtime_config.port(),
@@ -317,13 +336,15 @@ async fn main() -> anyhow::Result<()> {
         opcua_endpoint_url
     );
     info!(
-        "Reserved OPC UA ports {} ({}), {} ({}), and {} ({})",
+        "Reserved OPC UA ports {} ({}), {} ({}), {} ({}), and {} ({})",
         eclss_port,
         DEFAULT_ECLSS_PEA_ID,
         sabatier_port,
         DEFAULT_SABATIER_PEA_ID,
         power_port,
-        DEFAULT_POWER_PEA_ID
+        DEFAULT_POWER_PEA_ID,
+        thermal_port,
+        DEFAULT_THERMAL_PEA_ID
     );
 
     let plant_persistence = Arc::new(PlantPersistence::from_env()?);
@@ -358,13 +379,16 @@ async fn main() -> anyhow::Result<()> {
         eclss_state,
         sabatier_state,
         power_state,
+        thermal_state,
         airlock_runtime_state,
         eclss_runtime_state,
         sabatier_runtime_state,
         power_runtime_state,
+        thermal_runtime_state,
         eclss_operator_state_value,
         sabatier_operator_state_value,
         power_operator_state_value,
+        thermal_operator_state_value,
         plant_scheduler,
         plant_recovery,
     ) = match restored_checkpoint {
@@ -408,13 +432,16 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.eclss,
                 checkpoint.sabatier,
                 checkpoint.power,
+                checkpoint.thermal,
                 checkpoint.airlock_runtime,
                 checkpoint.eclss_runtime,
                 checkpoint.sabatier_runtime,
                 checkpoint.power_runtime,
+                checkpoint.thermal_runtime,
                 checkpoint.eclss_operator_state,
                 checkpoint.sabatier_operator_state,
                 checkpoint.power_operator_state,
+                checkpoint.thermal_operator_state,
                 scheduler,
                 PlantRecoveryStatus {
                     restored_from_checkpoint: true,
@@ -431,10 +458,13 @@ async fn main() -> anyhow::Result<()> {
             EclssSimulation::new(),
             SabatierSimulation::new(),
             PowerSimulation::new(),
+            ThermalSimulation::new(),
             default_runtime,
             default_runtime,
             default_runtime,
             default_runtime,
+            default_runtime,
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
@@ -454,12 +484,15 @@ async fn main() -> anyhow::Result<()> {
     let eclss_runtime = Arc::new(RwLock::new(eclss_runtime_state));
     let sabatier_runtime = Arc::new(RwLock::new(sabatier_runtime_state));
     let power_runtime = Arc::new(RwLock::new(power_runtime_state));
+    let thermal_runtime = Arc::new(RwLock::new(thermal_runtime_state));
     let eclss_operator_state = Arc::new(RwLock::new(eclss_operator_state_value));
     let sabatier_operator_state = Arc::new(RwLock::new(sabatier_operator_state_value));
     let power_operator_state = Arc::new(RwLock::new(power_operator_state_value));
+    let thermal_operator_state = Arc::new(RwLock::new(thermal_operator_state_value));
     let eclss_sim = Arc::new(RwLock::new(eclss_state));
     let sabatier_sim = Arc::new(RwLock::new(sabatier_state));
     let power_sim = Arc::new(RwLock::new(power_state));
+    let thermal_sim = Arc::new(RwLock::new(thermal_state));
     let tag_catalog = Arc::new(TagCatalog::full_base());
     tag_catalog
         .validate()
@@ -477,6 +510,7 @@ async fn main() -> anyhow::Result<()> {
         (DEFAULT_ECLSS_PEA_ID.to_string(), eclss_endpoint_url),
         (DEFAULT_SABATIER_PEA_ID.to_string(), sabatier_endpoint_url),
         (DEFAULT_POWER_PEA_ID.to_string(), power_endpoint_url),
+        (DEFAULT_THERMAL_PEA_ID.to_string(), thermal_endpoint_url),
     ]));
     let (snapshots_tx, _snapshots_rx) = broadcast::channel(256);
     let (systems_snapshots_tx, _systems_snapshots_rx) = broadcast::channel(256);
@@ -519,18 +553,27 @@ async fn main() -> anyhow::Result<()> {
         power_port,
         initial_security.clone(),
     );
+    opcua_subsystems::spawn_thermal_opcua_server(
+        thermal_sim.clone(),
+        thermal_runtime.clone(),
+        thermal_port,
+        initial_security.clone(),
+    );
     let context = AppContext {
         sim,
         airlock_runtime,
         eclss_runtime,
         sabatier_runtime,
         power_runtime,
+        thermal_runtime,
         eclss_operator_state,
         sabatier_operator_state,
         power_operator_state,
+        thermal_operator_state,
         eclss_sim,
         sabatier_sim,
         power_sim,
+        thermal_sim,
         pea_opcua_endpoints,
         zenoh_session,
         mqtt_uns,
@@ -557,6 +600,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(api_health))
         .route("/api/snapshot", get(api_snapshot))
         .route("/api/v1/power/snapshot", get(api_power_snapshot))
+        .route("/api/v1/thermal/snapshot", get(api_thermal_snapshot))
         .route("/api/v1/telemetry/catalog", get(api_telemetry_catalog))
         .route("/api/v1/telemetry/stats", get(api_telemetry_stats))
         .route("/api/v1/telemetry/history", get(api_telemetry_history))
@@ -748,10 +792,15 @@ fn spawn_simulation_task(
                 let runtime = context.power_runtime.read().await;
                 runtime.deployed && runtime.running
             };
+            let thermal_running = {
+                let runtime = context.thermal_runtime.read().await;
+                runtime.deployed && runtime.running
+            };
 
             let mut eclss_snapshot = None;
             let mut sabatier_snapshot = None;
             let mut power_snapshot = None;
+            let mut thermal_snapshot = None;
             let mut historian_frames = Vec::new();
             for _ in 0..steps_due {
                 let _transaction = context.plant_transaction.lock().await;
@@ -787,12 +836,24 @@ fn spawn_simulation_task(
                 } else {
                     0.35
                 };
+                let latest_thermal = {
+                    let mut sim = context.thermal_sim.write().await;
+                    sim.step(
+                        scheduled.fixed_step_sec,
+                        thermal_running,
+                        critical_power_available,
+                        latest_eclss.power_kw,
+                        latest_sabatier.power_kw,
+                        prior_power.served_load_kw,
+                    )
+                };
                 let latest_power = {
                     let mut sim = context.power_sim.write().await;
                     sim.step(
                         scheduled.fixed_step_sec,
                         power_running,
                         latest_eclss.power_kw,
+                        latest_thermal.pump_electric_power_kw + latest_thermal.heater_power_kw,
                         latest_sabatier.power_kw,
                         airlock_load_kw,
                     )
@@ -807,6 +868,7 @@ fn spawn_simulation_task(
                 eclss_snapshot = Some(latest_eclss);
                 sabatier_snapshot = Some(latest_sabatier);
                 power_snapshot = Some(latest_power);
+                thermal_snapshot = Some(latest_thermal);
 
                 // These deterministic boundaries are hooks for the forthcoming
                 // power/thermal and inventory/degradation model tiers.
@@ -829,6 +891,7 @@ fn spawn_simulation_task(
             let sabatier_snapshot =
                 sabatier_snapshot.expect("at least one fixed step was scheduled");
             let power_snapshot = power_snapshot.expect("at least one fixed step was scheduled");
+            let thermal_snapshot = thermal_snapshot.expect("at least one fixed step was scheduled");
             if !historian_frames.is_empty()
                 && let Err(err) = persist_core_historian_frames(&context, historian_frames).await
             {
@@ -873,10 +936,16 @@ fn spawn_simulation_task(
                     battery_soc_pct: power_snapshot.battery_soc_pct,
                     dc_bus_voltage_v: power_snapshot.bus_voltage_v,
                     power_load_shed_active: power_snapshot.load_shed_active,
+                    habitat_temp_c: thermal_snapshot.habitat_temp_c,
+                    thermal_heat_rejection_kw: thermal_snapshot.heat_rejection_kw,
+                    thermal_cooling_available: thermal_snapshot.cooling_available,
                     // Status
                     healthy: !airlock_snap.alarms.high_pressure_alarm_active
                         && !airlock_snap.alarms.low_pressure_alarm_active
-                        && !airlock_snap.alarms.leak_detected,
+                        && !airlock_snap.alarms.leak_detected
+                        && !thermal_snapshot.alarm_habitat_hot
+                        && !thermal_snapshot.alarm_habitat_cold
+                        && !thermal_snapshot.alarm_coolant_hot,
                 };
                 let _ = context.systems_snapshots_tx.send(systems_snap);
             }
@@ -942,6 +1011,19 @@ fn spawn_simulation_task(
                     power_runtime,
                     power_snapshot.timestamp_ms,
                     serde_json::to_value(&power_snapshot).unwrap_or_else(|_| json!({})),
+                )
+                .await;
+
+                let thermal_runtime = *context.thermal_runtime.read().await;
+                let thermal_operator_state = context.thermal_operator_state.read().await.clone();
+                publish_subsystem_uns(
+                    &context,
+                    DEFAULT_THERMAL_PEA_ID,
+                    THERMAL_SERVICE_TAG,
+                    subsystem_service_state(thermal_runtime, &thermal_operator_state),
+                    thermal_runtime,
+                    thermal_snapshot.timestamp_ms,
+                    serde_json::to_value(&thermal_snapshot).unwrap_or_else(|_| json!({})),
                 )
                 .await;
             }
@@ -1089,13 +1171,16 @@ async fn capture_plant_checkpoint(
         context.eclss_sim.read().await.clone(),
         context.sabatier_sim.read().await.clone(),
         context.power_sim.read().await.clone(),
+        context.thermal_sim.read().await.clone(),
         *context.airlock_runtime.read().await,
         *context.eclss_runtime.read().await,
         *context.sabatier_runtime.read().await,
         *context.power_runtime.read().await,
+        *context.thermal_runtime.read().await,
         context.eclss_operator_state.read().await.clone(),
         context.sabatier_operator_state.read().await.clone(),
         context.power_operator_state.read().await.clone(),
+        context.thermal_operator_state.read().await.clone(),
     ))
 }
 
@@ -1242,6 +1327,10 @@ async fn api_power_snapshot(State(context): State<AppContext>) -> impl IntoRespo
     axum::Json(context.power_sim.read().await.snapshot())
 }
 
+async fn api_thermal_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
+    axum::Json(context.thermal_sim.read().await.snapshot())
+}
+
 async fn api_events(State(context): State<AppContext>) -> impl IntoResponse {
     let events: Vec<EventEntry> = {
         let sim = context.sim.read().await;
@@ -1273,6 +1362,9 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
     let power_runtime = *context.power_runtime.read().await;
     let power_operator_state = context.power_operator_state.read().await.clone();
     let power_snapshot = context.power_sim.read().await.snapshot();
+    let thermal_runtime = *context.thermal_runtime.read().await;
+    let thermal_operator_state = context.thermal_operator_state.read().await.clone();
+    let thermal_snapshot = context.thermal_sim.read().await.snapshot();
     let items = vec![
         build_airlock_pea_descriptor(&airlock_snapshot, airlock_runtime),
         build_eclss_pea_descriptor(
@@ -1297,10 +1389,16 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
             power_runtime,
             &power_operator_state,
         ),
+        build_thermal_pea_descriptor(
+            &context,
+            &thermal_snapshot,
+            thermal_runtime,
+            &thermal_operator_state,
+        ),
     ];
     axum::Json(json!({
         "items": items,
-        "count": 4
+        "count": 5
     }))
 }
 
@@ -1357,6 +1455,17 @@ async fn api_v1_get_pea(
                 &operator_state,
             )))
         }
+        DEFAULT_THERMAL_PEA_ID => {
+            let runtime_state = *context.thermal_runtime.read().await;
+            let operator_state = context.thermal_operator_state.read().await.clone();
+            let snapshot = context.thermal_sim.read().await.snapshot();
+            Ok(axum::Json(build_thermal_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+            )))
+        }
         _ => Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}"))),
     }
 }
@@ -1387,6 +1496,7 @@ async fn api_v1_get_pea_opcua(
         DEFAULT_ECLSS_PEA_ID => "urn:underhill:eclss:mtp",
         DEFAULT_SABATIER_PEA_ID => "urn:underhill:sabatier:mtp",
         DEFAULT_POWER_PEA_ID => "urn:underhill:power:mtp",
+        DEFAULT_THERMAL_PEA_ID => "urn:underhill:thermal:mtp",
         _ => return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}"))),
     };
     Ok(axum::Json(json!({
@@ -1486,6 +1596,26 @@ async fn api_v1_deploy_pea(
             serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
         )
         .await;
+    } else if pea_id == DEFAULT_THERMAL_PEA_ID {
+        {
+            let mut runtime = context.thermal_runtime.write().await;
+            runtime.deployed = true;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+        let runtime = *context.thermal_runtime.read().await;
+        let operator_state = context.thermal_operator_state.read().await.clone();
+        let snap = context.thermal_sim.read().await.snapshot();
+        publish_subsystem_uns(
+            &context,
+            DEFAULT_THERMAL_PEA_ID,
+            THERMAL_SERVICE_TAG,
+            subsystem_service_state(runtime, &operator_state),
+            runtime,
+            snap.timestamp_ms,
+            serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
+        )
+        .await;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -1565,6 +1695,16 @@ async fn api_v1_start_pea(
         }
     } else if pea_id == DEFAULT_POWER_PEA_ID {
         let mut runtime = context.power_runtime.write().await;
+        if !runtime.deployed {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("PEA {pea_id} is not deployed"),
+            ));
+        }
+        runtime.running = true;
+        runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_THERMAL_PEA_ID {
+        let mut runtime = context.thermal_runtime.write().await;
         if !runtime.deployed {
             return Err((
                 StatusCode::CONFLICT,
@@ -1660,6 +1800,16 @@ async fn api_v1_stop_pea(
         }
         runtime.running = false;
         runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_THERMAL_PEA_ID {
+        let mut runtime = context.thermal_runtime.write().await;
+        if !runtime.deployed {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("PEA {pea_id} is not deployed"),
+            ));
+        }
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -1720,6 +1870,11 @@ async fn api_v1_undeploy_pea(
         runtime.last_transition_ms = transition_ms;
     } else if pea_id == DEFAULT_POWER_PEA_ID {
         let mut runtime = context.power_runtime.write().await;
+        runtime.deployed = false;
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_THERMAL_PEA_ID {
+        let mut runtime = context.thermal_runtime.write().await;
         runtime.deployed = false;
         runtime.running = false;
         runtime.last_transition_ms = transition_ms;
@@ -1787,6 +1942,15 @@ async fn api_v1_get_pea_mtp_tree(
             "nodes": nodes
         })));
     }
+    if pea_id == DEFAULT_THERMAL_PEA_ID {
+        let nodes = context.thermal_sim.read().await.mtp_nodes();
+        return Ok(axum::Json(json!({
+            "pea_id": DEFAULT_THERMAL_PEA_ID,
+            "namespace": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_THERMAL_PEA_ID),
+            "root_path": "Objects/Underhill/ThermalPEA",
+            "nodes": nodes
+        })));
+    }
     Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")))
 }
 
@@ -1814,6 +1978,32 @@ async fn api_v1_get_subsystem_operator_state(
         return Ok(axum::Json(json!({
             "pea_id": pea_id,
             "service_tag": SABATIER_SERVICE_TAG,
+            "operator_state": operator_state,
+            "derived_service_state": service_state,
+            "derived_state_code": subsystem_packml_state_code(service_state),
+            "runtime": runtime_state
+        })));
+    }
+    if pea_id == DEFAULT_POWER_PEA_ID {
+        let runtime_state = *context.power_runtime.read().await;
+        let operator_state = context.power_operator_state.read().await.clone();
+        let service_state = subsystem_service_state(runtime_state, &operator_state);
+        return Ok(axum::Json(json!({
+            "pea_id": pea_id,
+            "service_tag": POWER_SERVICE_TAG,
+            "operator_state": operator_state,
+            "derived_service_state": service_state,
+            "derived_state_code": subsystem_packml_state_code(service_state),
+            "runtime": runtime_state
+        })));
+    }
+    if pea_id == DEFAULT_THERMAL_PEA_ID {
+        let runtime_state = *context.thermal_runtime.read().await;
+        let operator_state = context.thermal_operator_state.read().await.clone();
+        let service_state = subsystem_service_state(runtime_state, &operator_state);
+        return Ok(axum::Json(json!({
+            "pea_id": pea_id,
+            "service_tag": THERMAL_SERVICE_TAG,
             "operator_state": operator_state,
             "derived_service_state": service_state,
             "derived_state_code": subsystem_packml_state_code(service_state),
@@ -2542,6 +2732,8 @@ fn service_tag_for_pea_id(pea_id: &str) -> Option<&'static str> {
         DEFAULT_AIRLOCK_PEA_ID => Some(AIRLOCK_SERVICE_TAG),
         DEFAULT_ECLSS_PEA_ID => Some(ECLSS_SERVICE_TAG),
         DEFAULT_SABATIER_PEA_ID => Some(SABATIER_SERVICE_TAG),
+        DEFAULT_POWER_PEA_ID => Some(POWER_SERVICE_TAG),
+        DEFAULT_THERMAL_PEA_ID => Some(THERMAL_SERVICE_TAG),
         _ => None,
     }
 }
@@ -3074,6 +3266,46 @@ fn build_power_pea_descriptor(
             "state": service_state,
             "transition_active": false,
             "active_procedure": if runtime_state.running { "Proc_MicrogridNominal" } else { "None" },
+            "command_en": operator_state.command_en
+        }],
+        "operator_state": operator_state,
+        "process_values": snapshot,
+        "updated_at_ms": snapshot.timestamp_ms,
+        "last_transition_ms": runtime_state.last_transition_ms
+    })
+}
+
+fn build_thermal_pea_descriptor(
+    context: &AppContext,
+    snapshot: &ThermalSnapshot,
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+) -> serde_json::Value {
+    let service_state = subsystem_service_state(runtime_state, operator_state).to_lowercase();
+    let health_state = if snapshot.alarm_habitat_hot || snapshot.alarm_habitat_cold {
+        "FAULT"
+    } else if snapshot.alarm_coolant_hot || !snapshot.cooling_available {
+        "WARN"
+    } else {
+        "OK"
+    };
+    json!({
+        "pea_id": DEFAULT_THERMAL_PEA_ID,
+        "pea_type": "THERMAL_CONTROL",
+        "name": "Underhill Thermal Control",
+        "node_id": context.node_id.clone(),
+        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_THERMAL_PEA_ID),
+        "root_path": "Objects/Underhill/ThermalPEA",
+        "opcua_endpoint": context.pea_opcua_endpoints.get(DEFAULT_THERMAL_PEA_ID).cloned().unwrap_or_default(),
+        "health_state": health_state,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "active_command_running": false,
+        "services": [{
+            "tag": THERMAL_SERVICE_TAG,
+            "state": service_state,
+            "transition_active": false,
+            "active_procedure": if runtime_state.running { "Proc_ThermalNominal" } else { "None" },
             "command_en": operator_state.command_en
         }],
         "operator_state": operator_state,

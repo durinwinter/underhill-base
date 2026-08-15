@@ -16,6 +16,7 @@ PORT_OPCUA_AIRLOCK="${AIRLOCK_OPCUA_PORT:-4841}"
 PORT_OPCUA_ECLSS="${ECLSS_OPCUA_PORT:-4842}"
 PORT_OPCUA_SABATIER="${SABATIER_OPCUA_PORT:-4843}"
 PORT_OPCUA_POWERGRID="${POWERGRID_OPCUA_PORT:-4844}"
+PORT_OPCUA_THERMAL="${THERMAL_OPCUA_PORT:-4845}"
 NONINTERACTIVE="${AIRLOCK_NONINTERACTIVE:-0}"
 AUTO_KILL_PORT="${AIRLOCK_AUTO_KILL_PORT:-0}"
 BIND_IP="${AIRLOCK_BIND_IP:-}"
@@ -254,6 +255,7 @@ choose_bind_ip() {
   export ECLSS_OPCUA_PORT="${ECLSS_OPCUA_PORT:-$PORT_OPCUA_ECLSS}"
   export SABATIER_OPCUA_PORT="${SABATIER_OPCUA_PORT:-$PORT_OPCUA_SABATIER}"
   export POWERGRID_OPCUA_PORT="${POWERGRID_OPCUA_PORT:-$PORT_OPCUA_POWERGRID}"
+  export THERMAL_OPCUA_PORT="${THERMAL_OPCUA_PORT:-$PORT_OPCUA_THERMAL}"
   if [ -z "${AIRLOCK_OPCUA_BIND_HOST:-}" ]; then
     export AIRLOCK_OPCUA_BIND_HOST="0.0.0.0"
   fi
@@ -386,6 +388,7 @@ ensure_port_available "$PORT_OPCUA_AIRLOCK"
 ensure_port_available "$PORT_OPCUA_ECLSS"
 ensure_port_available "$PORT_OPCUA_SABATIER"
 ensure_port_available "$PORT_OPCUA_POWERGRID"
+ensure_port_available "$PORT_OPCUA_THERMAL"
 
 step "Starting stack"
 $COMPOSE_CMD up -d --build
@@ -403,6 +406,7 @@ log_ok "i3X API: ${I3X_HTTP_API}/namespaces"  # clients can append the namespace
 log_ok "OPC UA Airlock:  opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_AIRLOCK}${AIRLOCK_OPCUA_ENDPOINT_PATH:-/underhill/airlock}"
 log_ok "OPC UA ECLSS:    opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_ECLSS}/underhill/eclss"
 log_ok "OPC UA Sabatier: opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_SABATIER}/underhill/sabatier"
-log_ok "OPC UA PowerGrid: opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_POWERGRID}/underhill/powergrid"
+log_ok "OPC UA PowerGrid: opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_POWERGRID}/underhill/power"
+log_ok "OPC UA Thermal:   opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_THERMAL}/underhill/thermal"
 log_info "Use ./scripts/launch.sh logs"
 log_info "Use ./scripts/launch.sh down"
