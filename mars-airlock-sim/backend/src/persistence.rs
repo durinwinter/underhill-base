@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::{
     PeaRuntimeState, SubsystemOperatorState,
     campaign::CampaignManager,
+    environment::EnvironmentSimulation,
     maintenance::MaintenanceSimulation,
     plant_runtime::PlantSchedulerState,
     sim::Simulation,
@@ -50,6 +51,8 @@ pub struct PlantCheckpoint {
     pub safety: SafetySimulation,
     #[serde(default = "MaintenanceSimulation::new")]
     pub maintenance: MaintenanceSimulation,
+    #[serde(default = "EnvironmentSimulation::new")]
+    pub environment: EnvironmentSimulation,
     pub airlock_runtime: PeaRuntimeState,
     pub eclss_runtime: PeaRuntimeState,
     pub sabatier_runtime: PeaRuntimeState,
@@ -63,6 +66,8 @@ pub struct PlantCheckpoint {
     pub safety_runtime: PeaRuntimeState,
     #[serde(default = "default_running_runtime")]
     pub maintenance_runtime: PeaRuntimeState,
+    #[serde(default = "default_running_runtime")]
+    pub environment_runtime: PeaRuntimeState,
     pub eclss_operator_state: SubsystemOperatorState,
     pub sabatier_operator_state: SubsystemOperatorState,
     #[serde(default)]
@@ -75,6 +80,8 @@ pub struct PlantCheckpoint {
     pub safety_operator_state: SubsystemOperatorState,
     #[serde(default)]
     pub maintenance_operator_state: SubsystemOperatorState,
+    #[serde(default)]
+    pub environment_operator_state: SubsystemOperatorState,
     #[serde(default)]
     pub campaigns: CampaignManager,
 }
@@ -93,6 +100,7 @@ impl PlantCheckpoint {
         water: WaterSimulation,
         safety: SafetySimulation,
         maintenance: MaintenanceSimulation,
+        environment: EnvironmentSimulation,
         airlock_runtime: PeaRuntimeState,
         eclss_runtime: PeaRuntimeState,
         sabatier_runtime: PeaRuntimeState,
@@ -101,6 +109,7 @@ impl PlantCheckpoint {
         water_runtime: PeaRuntimeState,
         safety_runtime: PeaRuntimeState,
         maintenance_runtime: PeaRuntimeState,
+        environment_runtime: PeaRuntimeState,
         eclss_operator_state: SubsystemOperatorState,
         sabatier_operator_state: SubsystemOperatorState,
         power_operator_state: SubsystemOperatorState,
@@ -108,6 +117,7 @@ impl PlantCheckpoint {
         water_operator_state: SubsystemOperatorState,
         safety_operator_state: SubsystemOperatorState,
         maintenance_operator_state: SubsystemOperatorState,
+        environment_operator_state: SubsystemOperatorState,
         campaigns: CampaignManager,
     ) -> Self {
         Self {
@@ -124,6 +134,7 @@ impl PlantCheckpoint {
             water,
             safety,
             maintenance,
+            environment,
             airlock_runtime,
             eclss_runtime,
             sabatier_runtime,
@@ -132,6 +143,7 @@ impl PlantCheckpoint {
             water_runtime,
             safety_runtime,
             maintenance_runtime,
+            environment_runtime,
             eclss_operator_state,
             sabatier_operator_state,
             power_operator_state,
@@ -139,6 +151,7 @@ impl PlantCheckpoint {
             water_operator_state,
             safety_operator_state,
             maintenance_operator_state,
+            environment_operator_state,
             campaigns,
         }
     }
@@ -535,6 +548,7 @@ mod tests {
             WaterSimulation::new(),
             SafetySimulation::new(),
             MaintenanceSimulation::new(),
+            EnvironmentSimulation::new(),
             PeaRuntimeState {
                 deployed: true,
                 running: true,
@@ -575,6 +589,12 @@ mod tests {
                 running: true,
                 last_transition_ms: 8,
             },
+            PeaRuntimeState {
+                deployed: true,
+                running: true,
+                last_transition_ms: 9,
+            },
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),

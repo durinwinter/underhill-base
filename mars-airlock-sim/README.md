@@ -8,7 +8,7 @@ Standalone Underhill Base simulator with:
 - Deterministic fast/medium/slow scheduler boundaries for continuous subsystem evolution
 - Writable request-variable command model with `Operator` and `Remote` channels
 - Staged subsystem writeback model for POL-driven `ECLSS` and `Sabatier` commands
-- MTP-aligned runtime model for eight PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`, `Water`, `Safety`, `Robotics/Maintenance`)
+- MTP-aligned runtime model for nine PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`, `Water`, `Safety`, `Robotics/Maintenance`, `Mars Environment`)
 - Native OPC UA servers via Rust crate `async-opcua` (one endpoint per PEA)
 - Validated shared PEA registry generating identity, type, service, namespace, endpoint-path, and i3X hierarchy metadata
 - UNS publishing over Zenoh and/or MQTT
@@ -25,6 +25,7 @@ Standalone Underhill Base simulator with:
   - `WATER-PEA-001` (conserved potable/waste/brine stocks, recovery, quality, demand, and alarms)
   - `SAFETY-PEA-001` (conserved habitat atmosphere, leak/makeup, fire/toxic gas, suppression, structure, and radiation)
   - `ROBOTICS-PEA-001` (shared maintenance queue, finite crew/robot/tool capacity, and warehouse spares)
+  - `ENVIRONMENT-PEA-001` (persistent cyclic Mars weather, solar, dust, pressure, temperature, wind, and radiation boundary)
 
 ## Runtime Features Implemented
 
@@ -77,6 +78,7 @@ Optional OPC UA env:
 - `WATER_OPCUA_PORT` (optional explicit port override for Water PEA)
 - `SAFETY_OPCUA_PORT` (optional explicit port override for Safety PEA)
 - `MAINTENANCE_OPCUA_PORT` (optional explicit port override for Robotics/Maintenance PEA)
+- `ENVIRONMENT_OPCUA_PORT` (optional explicit port override for Mars Environment PEA)
 - `AIRLOCK_OPCUA_ENDPOINT_PATH` (default `/underhill/airlock`)
 - `UNDERHILL_OPCUA_PORT_RANGE` (default `4841-4899`)
 - `UNDERHILL_OPCUA_PORT_ALLOCATIONS_FILE` (default `backend/data/opcua_port_allocations.json`)
@@ -107,7 +109,7 @@ Continuous runtime env:
 The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
 fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
 plant elapsed time, Mars sol, time scale, step index, catch-up backlog, and persistence settings.
-The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, Thermal, Water, Safety, Robotics/Maintenance, PEA runtime, operator,
+The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, Thermal, Water, Safety, Robotics/Maintenance, Mars Environment, PEA runtime, operator,
 and scheduler state, retains the preceding checkpoint as a recovery fallback, and restores the
 same plant identity on restart. Lifecycle records are appended to `plant-events.ndjson`. Docker
 Compose mounts `backend/data`, so container replacement does not discard the represented plant.
@@ -135,14 +137,19 @@ failure times remain private. REST and UNS expose component detail;
 the independent ECLSS OPC UA endpoint exposes reliability profile and summary counts. This initial
 profile is MADS-derived aggregate evidence, not raw MADS or a complete Mars ECLSS reliability model.
 
-The Power PEA continuously couples actual Airlock, ECLSS, and Sabatier demand to deterministic
-Mars-sol solar input, steady fission generation, battery charge/discharge limits and efficiencies,
+The Mars Environment PEA advances deterministic external physics continuously across lifecycle
+stops and canonical restarts. Its diurnal/seasonal weather, dust, solar, pressure, wind, and
+radiation state is the common boundary consumed by Power, Thermal, and Safety. Stopping its service
+stops monitoring and produces stale quality; it does not pause Mars or create a mission boundary.
+
+The Power PEA continuously couples actual Airlock, ECLSS, and Sabatier demand to shared Environment
+PEA solar and dust input, steady fission generation, battery charge/discharge limits and efficiencies,
 DC-bus voltage, flexible-load shedding, unmet critical load, and cumulative energy counters. Its
 instantaneous balance residual is exposed so agents can verify conservation rather than trusting
 plausible-looking independent signals. Power state and energy integrals survive canonical restarts.
 
 The Thermal PEA converts live equipment demand into habitat heat, rejects heat through a
-power-dependent coolant/radiator loop against a deterministic Mars ambient boundary, feeds pump
+power-dependent coolant/radiator loop against the shared Mars Environment ambient boundary, feeds pump
 and heater demand back into the Power PEA, and maintains an explicit sensible-energy ledger.
 Stopping cooling leaves passive rejection only and can produce a persistent habitat overheat;
 thermal energy, integrals, lifecycle state, and alarms survive canonical restarts.
@@ -175,7 +182,7 @@ The catalog is a discoverable contract and capacity budget—not a claim that ev
 already backed by implemented dynamics. Activation maturity is tracked separately as PEAs
 graduate from planned definitions to sensed values.
 
-Fifteen initial ECLSS, Power, Water, and Safety definitions are explicitly marked `model_backed` and written at each
+Thirty-five initial Environment, ECLSS, Power, Water, Safety, and Robotics definitions are explicitly marked `model_backed` and written at each
 simulated one-second boundary to `telemetry-history.ndjson`. Historian records contain monotonic
 durable sequence, stable tag ID, wall timestamp, continuous plant time, typed value, quality, and
 source-model identity. Startup recovers the bounded recent query window and continues the durable
@@ -279,6 +286,8 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /api/v1/thermal/snapshot`
 - `GET /api/v1/water/snapshot`
 - `GET /api/v1/safety/snapshot`
+- `GET /api/v1/maintenance/snapshot`
+- `GET /api/v1/environment/snapshot`
 - `POST /api/v1/safety/hazards`
 - `GET /api/v1/eclss/reliability`
 - `POST /api/v1/eclss/components/{component_id}/maintenance`

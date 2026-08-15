@@ -2,6 +2,7 @@ mod campaign;
 #[cfg(test)]
 mod dataset_manifest;
 mod eclss_reliability;
+mod environment;
 mod historian;
 mod maintenance;
 mod model;
@@ -60,14 +61,15 @@ use crate::campaign::{
     CampaignAction, CampaignManager, CampaignTemplateId, CreateCampaignRequest,
     SubmitObservationRequest,
 };
+use crate::environment::{EnvironmentSimulation, EnvironmentSnapshot};
 use crate::historian::{Historian, NewHistorianSample, TelemetryQuality};
 use crate::maintenance::{MaintenanceSimulation, MaintenanceSnapshot};
 use crate::pea_registry::{
-    ALL_PEA_DEFINITIONS, DEFAULT_AIRLOCK_PEA_ID, DEFAULT_ECLSS_PEA_ID, DEFAULT_MAINTENANCE_PEA_ID,
-    DEFAULT_POWER_PEA_ID, DEFAULT_SABATIER_PEA_ID, DEFAULT_SAFETY_PEA_ID, DEFAULT_THERMAL_PEA_ID,
-    DEFAULT_WATER_PEA_ID, ECLSS_SERVICE_TAG, MAINTENANCE_SERVICE_TAG, POWER_SERVICE_TAG,
-    SABATIER_SERVICE_TAG, SAFETY_SERVICE_TAG, THERMAL_SERVICE_TAG, WATER_SERVICE_TAG,
-    definition_for,
+    ALL_PEA_DEFINITIONS, DEFAULT_AIRLOCK_PEA_ID, DEFAULT_ECLSS_PEA_ID, DEFAULT_ENVIRONMENT_PEA_ID,
+    DEFAULT_MAINTENANCE_PEA_ID, DEFAULT_POWER_PEA_ID, DEFAULT_SABATIER_PEA_ID,
+    DEFAULT_SAFETY_PEA_ID, DEFAULT_THERMAL_PEA_ID, DEFAULT_WATER_PEA_ID, ECLSS_SERVICE_TAG,
+    ENVIRONMENT_SERVICE_TAG, MAINTENANCE_SERVICE_TAG, POWER_SERVICE_TAG, SABATIER_SERVICE_TAG,
+    SAFETY_SERVICE_TAG, THERMAL_SERVICE_TAG, WATER_SERVICE_TAG, definition_for,
 };
 use crate::persistence::{PlantCheckpoint, PlantPersistence, wall_time_ms};
 use crate::plant_runtime::{
@@ -124,6 +126,10 @@ struct SystemsSnapshot {
     maintenance_active_work_orders: usize,
     maintenance_queued_work_orders: usize,
     maintenance_robots_available: f64,
+    mars_ambient_temp_c: f64,
+    mars_dust_optical_depth: f64,
+    mars_surface_solar_w_m2: f64,
+    mars_wind_speed_m_s: f64,
     // Status
     healthy: bool,
 }
@@ -149,6 +155,7 @@ struct AppContext {
     water_runtime: Arc<RwLock<PeaRuntimeState>>,
     safety_runtime: Arc<RwLock<PeaRuntimeState>>,
     maintenance_runtime: Arc<RwLock<PeaRuntimeState>>,
+    environment_runtime: Arc<RwLock<PeaRuntimeState>>,
     eclss_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     sabatier_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     power_operator_state: Arc<RwLock<SubsystemOperatorState>>,
@@ -156,6 +163,7 @@ struct AppContext {
     water_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     safety_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     maintenance_operator_state: Arc<RwLock<SubsystemOperatorState>>,
+    environment_operator_state: Arc<RwLock<SubsystemOperatorState>>,
     eclss_sim: Arc<RwLock<EclssSimulation>>,
     sabatier_sim: Arc<RwLock<SabatierSimulation>>,
     power_sim: Arc<RwLock<PowerSimulation>>,
@@ -163,6 +171,7 @@ struct AppContext {
     water_sim: Arc<RwLock<WaterSimulation>>,
     safety_sim: Arc<RwLock<SafetySimulation>>,
     maintenance_sim: Arc<RwLock<MaintenanceSimulation>>,
+    environment_sim: Arc<RwLock<EnvironmentSimulation>>,
     campaigns: Arc<RwLock<CampaignManager>>,
     pea_opcua_endpoints: Arc<HashMap<String, String>>,
     zenoh_session: Option<Arc<Session>>,
@@ -390,6 +399,14 @@ async fn main() -> anyhow::Result<()> {
             })
         })
         .transpose()?;
+    let forced_environment_port = std::env::var("ENVIRONMENT_OPCUA_PORT")
+        .ok()
+        .map(|value| {
+            value.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("Invalid ENVIRONMENT_OPCUA_PORT value {value}; expected integer")
+            })
+        })
+        .transpose()?;
 
     let airlock_port = allocate_opcua_port_for_pea(DEFAULT_AIRLOCK_PEA_ID, forced_airlock_port)?;
     let eclss_port = allocate_opcua_port_for_pea(DEFAULT_ECLSS_PEA_ID, forced_eclss_port)?;
@@ -400,6 +417,8 @@ async fn main() -> anyhow::Result<()> {
     let safety_port = allocate_opcua_port_for_pea(DEFAULT_SAFETY_PEA_ID, forced_safety_port)?;
     let maintenance_port =
         allocate_opcua_port_for_pea(DEFAULT_MAINTENANCE_PEA_ID, forced_maintenance_port)?;
+    let environment_port =
+        allocate_opcua_port_for_pea(DEFAULT_ENVIRONMENT_PEA_ID, forced_environment_port)?;
 
     let opcua_runtime_config = opcua::OpcuaRuntimeConfig::from_env_with_port(airlock_port);
     let opcua_endpoint_url = opcua_runtime_config.endpoint_url();
@@ -415,6 +434,8 @@ async fn main() -> anyhow::Result<()> {
         build_opcua_endpoint_url(&opcua_host, safety_port, "/underhill/safety");
     let maintenance_endpoint_url =
         build_opcua_endpoint_url(&opcua_host, maintenance_port, "/underhill/maintenance");
+    let environment_endpoint_url =
+        build_opcua_endpoint_url(&opcua_host, environment_port, "/underhill/environment");
     info!(
         "Allocated OPC UA port {} for {} (endpoint {})",
         opcua_runtime_config.port(),
@@ -422,7 +443,7 @@ async fn main() -> anyhow::Result<()> {
         opcua_endpoint_url
     );
     info!(
-        "Reserved OPC UA ports {} ({}), {} ({}), {} ({}), {} ({}), {} ({}), {} ({}), and {} ({})",
+        "Reserved OPC UA ports {} ({}), {} ({}), {} ({}), {} ({}), {} ({}), {} ({}), {} ({}), and {} ({})",
         eclss_port,
         DEFAULT_ECLSS_PEA_ID,
         sabatier_port,
@@ -436,7 +457,9 @@ async fn main() -> anyhow::Result<()> {
         safety_port,
         DEFAULT_SAFETY_PEA_ID,
         maintenance_port,
-        DEFAULT_MAINTENANCE_PEA_ID
+        DEFAULT_MAINTENANCE_PEA_ID,
+        environment_port,
+        DEFAULT_ENVIRONMENT_PEA_ID
     );
 
     let plant_persistence = Arc::new(PlantPersistence::from_env()?);
@@ -475,6 +498,7 @@ async fn main() -> anyhow::Result<()> {
         water_state,
         safety_state,
         maintenance_state,
+        environment_state,
         airlock_runtime_state,
         mut eclss_runtime_state,
         mut sabatier_runtime_state,
@@ -483,6 +507,7 @@ async fn main() -> anyhow::Result<()> {
         mut water_runtime_state,
         mut safety_runtime_state,
         mut maintenance_runtime_state,
+        mut environment_runtime_state,
         eclss_operator_state_value,
         sabatier_operator_state_value,
         power_operator_state_value,
@@ -490,6 +515,7 @@ async fn main() -> anyhow::Result<()> {
         water_operator_state_value,
         safety_operator_state_value,
         maintenance_operator_state_value,
+        environment_operator_state_value,
         campaign_state,
         plant_scheduler,
         plant_recovery,
@@ -538,6 +564,7 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.water,
                 checkpoint.safety,
                 checkpoint.maintenance,
+                checkpoint.environment,
                 checkpoint.airlock_runtime,
                 checkpoint.eclss_runtime,
                 checkpoint.sabatier_runtime,
@@ -546,6 +573,7 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.water_runtime,
                 checkpoint.safety_runtime,
                 checkpoint.maintenance_runtime,
+                checkpoint.environment_runtime,
                 checkpoint.eclss_operator_state,
                 checkpoint.sabatier_operator_state,
                 checkpoint.power_operator_state,
@@ -553,6 +581,7 @@ async fn main() -> anyhow::Result<()> {
                 checkpoint.water_operator_state,
                 checkpoint.safety_operator_state,
                 checkpoint.maintenance_operator_state,
+                checkpoint.environment_operator_state,
                 checkpoint.campaigns,
                 scheduler,
                 PlantRecoveryStatus {
@@ -574,6 +603,7 @@ async fn main() -> anyhow::Result<()> {
             WaterSimulation::new(),
             SafetySimulation::new(),
             MaintenanceSimulation::new(),
+            EnvironmentSimulation::new(),
             default_runtime,
             default_runtime,
             default_runtime,
@@ -582,6 +612,8 @@ async fn main() -> anyhow::Result<()> {
             default_runtime,
             default_runtime,
             default_runtime,
+            default_runtime,
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
@@ -612,6 +644,10 @@ async fn main() -> anyhow::Result<()> {
             &mut maintenance_runtime_state,
             &maintenance_operator_state_value,
         ),
+        (
+            &mut environment_runtime_state,
+            &environment_operator_state_value,
+        ),
     ] {
         reconcile_runtime_with_operator(runtime, operator_state, initial_transition_ms);
     }
@@ -624,6 +660,7 @@ async fn main() -> anyhow::Result<()> {
     let water_runtime = Arc::new(RwLock::new(water_runtime_state));
     let safety_runtime = Arc::new(RwLock::new(safety_runtime_state));
     let maintenance_runtime = Arc::new(RwLock::new(maintenance_runtime_state));
+    let environment_runtime = Arc::new(RwLock::new(environment_runtime_state));
     let eclss_operator_state = Arc::new(RwLock::new(eclss_operator_state_value));
     let sabatier_operator_state = Arc::new(RwLock::new(sabatier_operator_state_value));
     let power_operator_state = Arc::new(RwLock::new(power_operator_state_value));
@@ -631,6 +668,7 @@ async fn main() -> anyhow::Result<()> {
     let water_operator_state = Arc::new(RwLock::new(water_operator_state_value));
     let safety_operator_state = Arc::new(RwLock::new(safety_operator_state_value));
     let maintenance_operator_state = Arc::new(RwLock::new(maintenance_operator_state_value));
+    let environment_operator_state = Arc::new(RwLock::new(environment_operator_state_value));
     let eclss_sim = Arc::new(RwLock::new(eclss_state));
     let sabatier_sim = Arc::new(RwLock::new(sabatier_state));
     let power_sim = Arc::new(RwLock::new(power_state));
@@ -638,6 +676,7 @@ async fn main() -> anyhow::Result<()> {
     let water_sim = Arc::new(RwLock::new(water_state));
     let safety_sim = Arc::new(RwLock::new(safety_state));
     let maintenance_sim = Arc::new(RwLock::new(maintenance_state));
+    let environment_sim = Arc::new(RwLock::new(environment_state));
     let campaigns = Arc::new(RwLock::new(campaign_state));
     let tag_catalog = Arc::new(TagCatalog::full_base());
     tag_catalog
@@ -662,6 +701,10 @@ async fn main() -> anyhow::Result<()> {
         (
             DEFAULT_MAINTENANCE_PEA_ID.to_string(),
             maintenance_endpoint_url,
+        ),
+        (
+            DEFAULT_ENVIRONMENT_PEA_ID.to_string(),
+            environment_endpoint_url,
         ),
     ]));
     let (snapshots_tx, _snapshots_rx) = broadcast::channel(256);
@@ -729,6 +772,12 @@ async fn main() -> anyhow::Result<()> {
         maintenance_port,
         initial_security.clone(),
     );
+    opcua_subsystems::spawn_environment_opcua_server(
+        environment_sim.clone(),
+        environment_runtime.clone(),
+        environment_port,
+        initial_security.clone(),
+    );
     let context = AppContext {
         sim,
         airlock_runtime,
@@ -739,6 +788,7 @@ async fn main() -> anyhow::Result<()> {
         water_runtime,
         safety_runtime,
         maintenance_runtime,
+        environment_runtime,
         eclss_operator_state,
         sabatier_operator_state,
         power_operator_state,
@@ -746,6 +796,7 @@ async fn main() -> anyhow::Result<()> {
         water_operator_state,
         safety_operator_state,
         maintenance_operator_state,
+        environment_operator_state,
         eclss_sim,
         sabatier_sim,
         power_sim,
@@ -753,6 +804,7 @@ async fn main() -> anyhow::Result<()> {
         water_sim,
         safety_sim,
         maintenance_sim,
+        environment_sim,
         campaigns,
         pea_opcua_endpoints,
         zenoh_session,
@@ -784,6 +836,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/water/snapshot", get(api_water_snapshot))
         .route("/api/v1/safety/snapshot", get(api_safety_snapshot))
         .route("/api/v1/maintenance/snapshot", get(api_maintenance_snapshot))
+        .route("/api/v1/environment/snapshot", get(api_environment_snapshot))
         .route(
             "/api/v1/maintenance/inventory/{sku}",
             post(api_receive_maintenance_inventory),
@@ -1013,6 +1066,10 @@ fn spawn_simulation_task(
                 let runtime = context.maintenance_runtime.read().await;
                 runtime.deployed && runtime.running
             };
+            let environment_running = {
+                let runtime = context.environment_runtime.read().await;
+                runtime.deployed && runtime.running
+            };
 
             let mut eclss_snapshot = None;
             let mut sabatier_snapshot = None;
@@ -1021,6 +1078,7 @@ fn spawn_simulation_task(
             let mut water_snapshot = None;
             let mut safety_snapshot = None;
             let mut maintenance_snapshot = None;
+            let mut environment_snapshot = None;
             let mut historian_frames = Vec::new();
             for _ in 0..steps_due {
                 let _transaction = context.plant_transaction.lock().await;
@@ -1034,6 +1092,10 @@ fn spawn_simulation_task(
                     let mut sim = context.sim.write().await;
                     sim.step(scheduled.fixed_step_sec);
                     sim.snapshot()
+                };
+                let latest_environment = {
+                    let mut sim = context.environment_sim.write().await;
+                    sim.step(scheduled.fixed_step_sec, environment_running)
                 };
 
                 let (maintenance_allocations, latest_maintenance, maintenance_events) = {
@@ -1121,6 +1183,8 @@ fn spawn_simulation_task(
                         safety_running,
                         critical_power_available,
                         eclss_running && critical_power_available,
+                        latest_environment.exterior_pressure_kpa,
+                        latest_environment.external_radiation_msv_h,
                     )
                 };
                 let airlock_load_kw = if latest_airlock.pump_on {
@@ -1138,6 +1202,7 @@ fn spawn_simulation_task(
                         latest_sabatier.power_kw,
                         latest_safety.fire_heat_release_kw,
                         prior_power.served_load_kw,
+                        latest_environment.ambient_temperature_c,
                     )
                 };
                 let latest_power = {
@@ -1145,6 +1210,8 @@ fn spawn_simulation_task(
                     sim.step(
                         scheduled.fixed_step_sec,
                         power_running,
+                        latest_environment.surface_solar_irradiance_w_m2,
+                        latest_environment.dust_optical_depth,
                         latest_eclss.power_kw,
                         latest_thermal.pump_electric_power_kw + latest_thermal.heater_power_kw,
                         latest_water.treatment_power_kw,
@@ -1172,6 +1239,7 @@ fn spawn_simulation_task(
                         latest_water.clone(),
                         latest_safety.clone(),
                         latest_maintenance.clone(),
+                        latest_environment.clone(),
                     ));
                 }
                 eclss_snapshot = Some(latest_eclss);
@@ -1181,6 +1249,7 @@ fn spawn_simulation_task(
                 water_snapshot = Some(latest_water);
                 safety_snapshot = Some(latest_safety);
                 maintenance_snapshot = Some(latest_maintenance);
+                environment_snapshot = Some(latest_environment);
 
                 // These deterministic boundaries are hooks for the forthcoming
                 // power/thermal and inventory/degradation model tiers.
@@ -1208,6 +1277,8 @@ fn spawn_simulation_task(
             let safety_snapshot = safety_snapshot.expect("at least one fixed step was scheduled");
             let maintenance_snapshot =
                 maintenance_snapshot.expect("at least one fixed step was scheduled");
+            let environment_snapshot =
+                environment_snapshot.expect("at least one fixed step was scheduled");
             if !historian_frames.is_empty()
                 && let Err(err) = persist_core_historian_frames(&context, historian_frames).await
             {
@@ -1264,6 +1335,10 @@ fn spawn_simulation_task(
                     maintenance_active_work_orders: maintenance_snapshot.active_work_orders,
                     maintenance_queued_work_orders: maintenance_snapshot.queued_work_orders,
                     maintenance_robots_available: maintenance_snapshot.robots_available,
+                    mars_ambient_temp_c: environment_snapshot.ambient_temperature_c,
+                    mars_dust_optical_depth: environment_snapshot.dust_optical_depth,
+                    mars_surface_solar_w_m2: environment_snapshot.surface_solar_irradiance_w_m2,
+                    mars_wind_speed_m_s: environment_snapshot.wind_speed_m_s,
                     // Status
                     healthy: !airlock_snap.alarms.high_pressure_alarm_active
                         && !airlock_snap.alarms.low_pressure_alarm_active
@@ -1399,6 +1474,20 @@ fn spawn_simulation_task(
                     serde_json::to_value(&maintenance_snapshot).unwrap_or_else(|_| json!({})),
                 )
                 .await;
+
+                let environment_runtime = *context.environment_runtime.read().await;
+                let environment_operator_state =
+                    context.environment_operator_state.read().await.clone();
+                publish_subsystem_uns(
+                    &context,
+                    DEFAULT_ENVIRONMENT_PEA_ID,
+                    ENVIRONMENT_SERVICE_TAG,
+                    subsystem_service_state(environment_runtime, &environment_operator_state),
+                    environment_runtime,
+                    environment_snapshot.timestamp_ms,
+                    serde_json::to_value(&environment_snapshot).unwrap_or_else(|_| json!({})),
+                )
+                .await;
             }
         }
     })
@@ -1413,15 +1502,23 @@ async fn persist_core_historian_frames(
         WaterSnapshot,
         SafetySnapshot,
         MaintenanceSnapshot,
+        EnvironmentSnapshot,
     )>,
 ) -> anyhow::Result<()> {
     let frames = frames
         .into_iter()
         .map(
-            |(plant_elapsed_sec, eclss, power, water, safety, maintenance)| {
+            |(plant_elapsed_sec, eclss, power, water, safety, maintenance, environment)| {
                 (
                     plant_elapsed_sec,
-                    build_core_historian_samples(&eclss, &power, &water, &safety, &maintenance),
+                    build_core_historian_samples(
+                        &eclss,
+                        &power,
+                        &water,
+                        &safety,
+                        &maintenance,
+                        &environment,
+                    ),
                 )
             },
         )
@@ -1439,6 +1536,7 @@ fn build_core_historian_samples(
     water: &WaterSnapshot,
     safety: &SafetySnapshot,
     maintenance: &MaintenanceSnapshot,
+    environment: &EnvironmentSnapshot,
 ) -> Vec<NewHistorianSample> {
     let eclss_quality = if eclss.reliability.failed_count > 0 || power.alarm_bus_undervoltage {
         TelemetryQuality::Bad
@@ -1497,6 +1595,25 @@ fn build_core_historian_samples(
     } else {
         TelemetryQuality::Good
     };
+    let environment_quality = if !environment.monitoring_available {
+        TelemetryQuality::Stale
+    } else if environment.alarm_dust_storm
+        || environment.alarm_high_wind
+        || environment.alarm_solar_particle_event
+    {
+        TelemetryQuality::Uncertain
+    } else {
+        TelemetryQuality::Good
+    };
+    let environment_quality_code = match environment_quality {
+        TelemetryQuality::Good => 0,
+        TelemetryQuality::Uncertain => 1,
+        TelemetryQuality::Stale => 2,
+        TelemetryQuality::Bad => 3,
+    };
+    let environment_alarm = environment.alarm_dust_storm
+        || environment.alarm_high_wind
+        || environment.alarm_solar_particle_event;
     let warehouse_total: u32 = maintenance.warehouse_spares.values().copied().sum();
     let tool_capacity: u32 = maintenance
         .tools
@@ -1514,6 +1631,54 @@ fn build_core_historian_samples(
     let robots_reserved = (maintenance.robots_total - maintenance.robots_available).max(0.0);
     let source = "continuous_model_v1".to_string();
     vec![
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.true_value".to_string(),
+            value: json!((environment.surface_solar_irradiance_w_m2 / 650.0).clamp(0.0, 1.0)),
+            quality: TelemetryQuality::Good,
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.measured_value".to_string(),
+            value: json!((environment.surface_solar_irradiance_w_m2 / 650.0).clamp(0.0, 1.0)),
+            quality: environment_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.residual".to_string(),
+            value: json!(0.0),
+            quality: environment_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.alarm_active".to_string(),
+            value: json!(environment_alarm),
+            quality: environment_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.quality_code".to_string(),
+            value: json!(environment_quality_code),
+            quality: environment_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.health_state".to_string(),
+            value: json!(if !environment.monitoring_available {
+                "stale"
+            } else if environment_alarm {
+                "degraded"
+            } else {
+                "normal"
+            }),
+            quality: environment_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.environment.00000.runtime_hours".to_string(),
+            value: json!(environment.sim_time_sec / 3600.0),
+            quality: environment_quality,
+            source: source.clone(),
+        },
         NewHistorianSample {
             tag_id: "underhill.v1.eclss.00000.pressure".to_string(),
             value: json!(eclss.cabin_pressure_kpa),
@@ -1767,6 +1932,7 @@ async fn capture_plant_checkpoint(
         context.water_sim.read().await.clone(),
         context.safety_sim.read().await.clone(),
         context.maintenance_sim.read().await.clone(),
+        context.environment_sim.read().await.clone(),
         *context.airlock_runtime.read().await,
         *context.eclss_runtime.read().await,
         *context.sabatier_runtime.read().await,
@@ -1775,6 +1941,7 @@ async fn capture_plant_checkpoint(
         *context.water_runtime.read().await,
         *context.safety_runtime.read().await,
         *context.maintenance_runtime.read().await,
+        *context.environment_runtime.read().await,
         context.eclss_operator_state.read().await.clone(),
         context.sabatier_operator_state.read().await.clone(),
         context.power_operator_state.read().await.clone(),
@@ -1782,6 +1949,7 @@ async fn capture_plant_checkpoint(
         context.water_operator_state.read().await.clone(),
         context.safety_operator_state.read().await.clone(),
         context.maintenance_operator_state.read().await.clone(),
+        context.environment_operator_state.read().await.clone(),
         context.campaigns.read().await.clone(),
     ))
 }
@@ -1953,6 +2121,10 @@ async fn api_safety_snapshot(State(context): State<AppContext>) -> impl IntoResp
 
 async fn api_maintenance_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
     axum::Json(context.maintenance_sim.read().await.snapshot())
+}
+
+async fn api_environment_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
+    axum::Json(context.environment_sim.read().await.snapshot())
 }
 
 async fn api_receive_maintenance_inventory(
@@ -2398,6 +2570,9 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
     let maintenance_runtime = *context.maintenance_runtime.read().await;
     let maintenance_operator_state = context.maintenance_operator_state.read().await.clone();
     let maintenance_snapshot = context.maintenance_sim.read().await.snapshot();
+    let environment_runtime = *context.environment_runtime.read().await;
+    let environment_operator_state = context.environment_operator_state.read().await.clone();
+    let environment_snapshot = context.environment_sim.read().await.snapshot();
     let items = vec![
         build_airlock_pea_descriptor(&airlock_snapshot, airlock_runtime),
         build_eclss_pea_descriptor(
@@ -2446,10 +2621,16 @@ async fn api_v1_list_peas(State(context): State<AppContext>) -> impl IntoRespons
             maintenance_runtime,
             &maintenance_operator_state,
         ),
+        build_environment_pea_descriptor(
+            &context,
+            &environment_snapshot,
+            environment_runtime,
+            &environment_operator_state,
+        ),
     ];
     axum::Json(json!({
         "items": items,
-        "count": 8
+        "count": 9
     }))
 }
 
@@ -2544,6 +2725,17 @@ async fn api_v1_get_pea(
             let operator_state = context.maintenance_operator_state.read().await.clone();
             let snapshot = context.maintenance_sim.read().await.snapshot();
             Ok(axum::Json(build_maintenance_pea_descriptor(
+                &context,
+                &snapshot,
+                runtime_state,
+                &operator_state,
+            )))
+        }
+        DEFAULT_ENVIRONMENT_PEA_ID => {
+            let runtime_state = *context.environment_runtime.read().await;
+            let operator_state = context.environment_operator_state.read().await.clone();
+            let snapshot = context.environment_sim.read().await.snapshot();
+            Ok(axum::Json(build_environment_pea_descriptor(
                 &context,
                 &snapshot,
                 runtime_state,
@@ -2756,6 +2948,26 @@ async fn api_v1_deploy_pea(
             serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
         )
         .await;
+    } else if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        {
+            let mut runtime = context.environment_runtime.write().await;
+            runtime.deployed = true;
+            runtime.running = false;
+            runtime.last_transition_ms = transition_ms;
+        }
+        let runtime = *context.environment_runtime.read().await;
+        let operator_state = context.environment_operator_state.read().await.clone();
+        let snap = context.environment_sim.read().await.snapshot();
+        publish_subsystem_uns(
+            &context,
+            DEFAULT_ENVIRONMENT_PEA_ID,
+            ENVIRONMENT_SERVICE_TAG,
+            subsystem_service_state(runtime, &operator_state),
+            runtime,
+            snap.timestamp_ms,
+            serde_json::to_value(&snap).unwrap_or_else(|_| json!({})),
+        )
+        .await;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -2893,6 +3105,17 @@ async fn api_v1_start_pea(
         }
         runtime.running = true;
         runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        ensure_subsystem_start_allowed(&pea_id, &*context.environment_operator_state.read().await)?;
+        let mut runtime = context.environment_runtime.write().await;
+        if !runtime.deployed {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("PEA {pea_id} is not deployed"),
+            ));
+        }
+        runtime.running = true;
+        runtime.last_transition_ms = transition_ms;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -3020,6 +3243,16 @@ async fn api_v1_stop_pea(
         }
         runtime.running = false;
         runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        let mut runtime = context.environment_runtime.write().await;
+        if !runtime.deployed {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("PEA {pea_id} is not deployed"),
+            ));
+        }
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
@@ -3100,6 +3333,11 @@ async fn api_v1_undeploy_pea(
         runtime.last_transition_ms = transition_ms;
     } else if pea_id == DEFAULT_MAINTENANCE_PEA_ID {
         let mut runtime = context.maintenance_runtime.write().await;
+        runtime.deployed = false;
+        runtime.running = false;
+        runtime.last_transition_ms = transition_ms;
+    } else if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        let mut runtime = context.environment_runtime.write().await;
         runtime.deployed = false;
         runtime.running = false;
         runtime.last_transition_ms = transition_ms;
@@ -3203,6 +3441,15 @@ async fn api_v1_get_pea_mtp_tree(
             "nodes": nodes
         })));
     }
+    if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        let nodes = context.environment_sim.read().await.mtp_nodes();
+        return Ok(axum::Json(json!({
+            "pea_id": DEFAULT_ENVIRONMENT_PEA_ID,
+            "namespace": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_ENVIRONMENT_PEA_ID),
+            "root_path": "Objects/Underhill/EnvironmentPEA",
+            "nodes": nodes
+        })));
+    }
     Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")))
 }
 
@@ -3299,6 +3546,20 @@ async fn api_v1_get_subsystem_operator_state(
             "derived_service_state": service_state,
             "derived_state_code": subsystem_packml_state_code(service_state),
             "runtime": runtime_state
+        })));
+    }
+    if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        let runtime_state = *context.environment_runtime.read().await;
+        let operator_state = context.environment_operator_state.read().await.clone();
+        let service_state = subsystem_service_state(runtime_state, &operator_state);
+        return Ok(axum::Json(json!({
+            "pea_id": pea_id,
+            "service_tag": ENVIRONMENT_SERVICE_TAG,
+            "operator_state": operator_state,
+            "derived_service_state": service_state,
+            "derived_state_code": subsystem_packml_state_code(service_state),
+            "runtime": runtime_state,
+            "physics_running": true
         })));
     }
     Err((
@@ -3494,6 +3755,10 @@ fn subsystem_control_handles(
             context.maintenance_runtime.clone(),
             context.maintenance_operator_state.clone(),
         )),
+        DEFAULT_ENVIRONMENT_PEA_ID => Some((
+            context.environment_runtime.clone(),
+            context.environment_operator_state.clone(),
+        )),
         _ => None,
     }
 }
@@ -3520,6 +3785,9 @@ async fn current_subsystem_process_values(
         DEFAULT_SAFETY_PEA_ID => snapshot_value!(context.safety_sim.read().await.snapshot()),
         DEFAULT_MAINTENANCE_PEA_ID => {
             snapshot_value!(context.maintenance_sim.read().await.snapshot())
+        }
+        DEFAULT_ENVIRONMENT_PEA_ID => {
+            snapshot_value!(context.environment_sim.read().await.snapshot())
         }
         _ => {
             return Err((
@@ -3558,6 +3826,9 @@ async fn api_v1_i3x_list_peas(State(context): State<AppContext>) -> impl IntoRes
     let maintenance_runtime = *context.maintenance_runtime.read().await;
     let maintenance_operator_state = context.maintenance_operator_state.read().await.clone();
     let maintenance_snapshot = context.maintenance_sim.read().await.snapshot();
+    let environment_runtime = *context.environment_runtime.read().await;
+    let environment_operator_state = context.environment_operator_state.read().await.clone();
+    let environment_snapshot = context.environment_sim.read().await.snapshot();
     let item = build_i3x_pea_descriptor(&snapshot, runtime_state, &context.node_id);
     let eclss_item = build_i3x_subsystem_descriptor(
         &context,
@@ -3615,13 +3886,21 @@ async fn api_v1_i3x_list_peas(State(context): State<AppContext>) -> impl IntoRes
         &maintenance_operator_state,
         &maintenance_snapshot,
     );
+    let environment_item = build_i3x_subsystem_descriptor(
+        &context,
+        DEFAULT_ENVIRONMENT_PEA_ID,
+        ENVIRONMENT_SERVICE_TAG,
+        environment_runtime,
+        &environment_operator_state,
+        &environment_snapshot,
+    );
     axum::Json(json!({
         "adapter": {
             "name": "underhill-i3x-adapter",
             "version": "0.1.0",
         },
-        "items": [item, eclss_item, sabatier_item, power_item, thermal_item, water_item, safety_item, maintenance_item],
-        "count": 8
+        "items": [item, eclss_item, sabatier_item, power_item, thermal_item, water_item, safety_item, maintenance_item, environment_item],
+        "count": 9
     }))
 }
 
@@ -3727,6 +4006,19 @@ async fn api_v1_i3x_get_pea(
             &context,
             DEFAULT_MAINTENANCE_PEA_ID,
             MAINTENANCE_SERVICE_TAG,
+            runtime_state,
+            &operator_state,
+            &snapshot,
+        )));
+    }
+    if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        let runtime_state = *context.environment_runtime.read().await;
+        let operator_state = context.environment_operator_state.read().await.clone();
+        let snapshot = context.environment_sim.read().await.snapshot();
+        return Ok(axum::Json(build_i3x_subsystem_descriptor(
+            &context,
+            DEFAULT_ENVIRONMENT_PEA_ID,
+            ENVIRONMENT_SERVICE_TAG,
             runtime_state,
             &operator_state,
             &snapshot,
@@ -4111,6 +4403,14 @@ async fn api_v1_i3x_object_value(
             build_maintenance_pea_descriptor(&context, &snapshot, runtime_state, &operator_state),
             true,
         )
+    } else if element_id == DEFAULT_ENVIRONMENT_PEA_ID {
+        let runtime_state = *context.environment_runtime.read().await;
+        let operator_state = context.environment_operator_state.read().await.clone();
+        let snapshot = context.environment_sim.read().await.snapshot();
+        (
+            build_environment_pea_descriptor(&context, &snapshot, runtime_state, &operator_state),
+            true,
+        )
     } else if let Some((pea_id, service_tag)) = element_id.split_once(':') {
         let state = if pea_id == DEFAULT_AIRLOCK_PEA_ID {
             let snapshot = context.sim.read().await.snapshot();
@@ -4142,6 +4442,10 @@ async fn api_v1_i3x_object_value(
         } else if pea_id == DEFAULT_MAINTENANCE_PEA_ID {
             let runtime = *context.maintenance_runtime.read().await;
             let operator_state = context.maintenance_operator_state.read().await.clone();
+            subsystem_service_state(runtime, &operator_state).to_string()
+        } else if pea_id == DEFAULT_ENVIRONMENT_PEA_ID {
+            let runtime = *context.environment_runtime.read().await;
+            let operator_state = context.environment_operator_state.read().await.clone();
             subsystem_service_state(runtime, &operator_state).to_string()
         } else {
             return Err((
@@ -4936,6 +5240,50 @@ fn build_maintenance_pea_descriptor(
             "state": service_state,
             "transition_active": false,
             "active_procedure": if snapshot.active_work_orders > 0 { "Proc_SharedMaintenanceDispatch" } else { "Proc_MaintenanceStandby" },
+            "command_en": operator_state.command_en
+        }],
+        "operator_state": operator_state,
+        "process_values": snapshot,
+        "updated_at_ms": snapshot.timestamp_ms,
+        "last_transition_ms": runtime_state.last_transition_ms
+    })
+}
+
+fn build_environment_pea_descriptor(
+    context: &AppContext,
+    snapshot: &EnvironmentSnapshot,
+    runtime_state: PeaRuntimeState,
+    operator_state: &SubsystemOperatorState,
+) -> serde_json::Value {
+    let service_state = subsystem_service_state(runtime_state, operator_state).to_lowercase();
+    let health_state = if !snapshot.monitoring_available {
+        "STALE"
+    } else if snapshot.alarm_dust_storm
+        || snapshot.alarm_high_wind
+        || snapshot.alarm_solar_particle_event
+    {
+        "WARN"
+    } else {
+        "OK"
+    };
+    json!({
+        "pea_id": DEFAULT_ENVIRONMENT_PEA_ID,
+        "pea_type": "MARS_ENVIRONMENT",
+        "name": "Underhill Mars Environment",
+        "node_id": context.node_id.clone(),
+        "namespace_uri": format!("urn:underhill:{}:pea:{}", context.node_id.as_str(), DEFAULT_ENVIRONMENT_PEA_ID),
+        "root_path": "Objects/Underhill/EnvironmentPEA",
+        "opcua_endpoint": context.pea_opcua_endpoints.get(DEFAULT_ENVIRONMENT_PEA_ID).cloned().unwrap_or_default(),
+        "health_state": health_state,
+        "deployed": runtime_state.deployed,
+        "running": runtime_state.running,
+        "physics_running": true,
+        "active_command_running": false,
+        "services": [{
+            "tag": ENVIRONMENT_SERVICE_TAG,
+            "state": service_state,
+            "transition_active": false,
+            "active_procedure": if runtime_state.running { "Proc_MarsEnvironmentMonitoring" } else { "None" },
             "command_en": operator_state.command_en
         }],
         "operator_state": operator_state,

@@ -5,8 +5,6 @@ use crate::eclss_reliability::{
     EclssReliabilitySnapshot, EclssReliabilityState, EclssRepairRequest, ReliabilityEvent,
 };
 
-const MARS_SOL_SEC: f64 = 88_775.244;
-
 #[derive(Debug, Clone, Serialize)]
 pub struct EclssSnapshot {
     pub timestamp_ms: u64,
@@ -240,6 +238,8 @@ impl PowerSimulation {
         &mut self,
         dt_sec: f64,
         running: bool,
+        surface_solar_irradiance_w_m2: f64,
+        dust_optical_depth: f64,
         eclss_load_kw: f64,
         thermal_load_kw: f64,
         water_load_kw: f64,
@@ -249,9 +249,8 @@ impl PowerSimulation {
         airlock_load_kw: f64,
     ) -> PowerSnapshot {
         self.sim_time_sec += dt_sec;
-        let sol_fraction = (self.sim_time_sec % MARS_SOL_SEC) / MARS_SOL_SEC;
-        let daylight = (std::f64::consts::TAU * sol_fraction).cos().max(0.0);
-        self.solar_irradiance_w_m2 = 590.0 * daylight * (-self.dust_opacity).exp();
+        self.solar_irradiance_w_m2 = surface_solar_irradiance_w_m2.max(0.0);
+        self.dust_opacity = dust_optical_depth.max(0.0);
         let area_limited_kw = self.solar_irradiance_w_m2 * self.solar_array_area_m2 / 1_000.0;
         self.solar_available_kw = if running {
             area_limited_kw.min(self.solar_array_capacity_kw)
@@ -442,10 +441,10 @@ impl ThermalSimulation {
         sabatier_electric_kw: f64,
         fire_heat_release_kw: f64,
         served_base_electric_kw: f64,
+        mars_ambient_temp_c: f64,
     ) -> ThermalSnapshot {
         self.sim_time_sec += dt_sec;
-        let sol_fraction = (self.sim_time_sec % MARS_SOL_SEC) / MARS_SOL_SEC;
-        self.mars_ambient_temp_c = -63.0 + 25.0 * (std::f64::consts::TAU * sol_fraction).cos();
+        self.mars_ambient_temp_c = mars_ambient_temp_c.clamp(-150.0, 40.0);
         let habitat_temp_c = self.habitat_temp_c();
         self.equipment_heat_load_kw = 10.0
             + 0.85 * eclss_electric_kw.max(0.0)
@@ -862,11 +861,15 @@ impl SafetySimulation {
         running: bool,
         critical_power_available: bool,
         eclss_running: bool,
+        exterior_pressure_kpa: f64,
+        external_radiation_msv_h: f64,
     ) -> SafetySnapshot {
         if dt_sec <= 0.0 {
             return self.snapshot();
         }
         self.sim_time_sec += dt_sec;
+        self.exterior_pressure_kpa = exterior_pressure_kpa.clamp(0.0, 2.0);
+        self.external_radiation_msv_h = external_radiation_msv_h.max(0.0);
         self.monitoring_available = running && critical_power_available;
         let dt_hours = dt_sec / 3_600.0;
         let opening_ledger_kg = self.habitat_air_mass_kg + self.cumulative_leaked_air_kg;
@@ -927,12 +930,6 @@ impl SafetySimulation {
                 .max(0.0);
         }
 
-        let sol_phase = (self.sim_time_sec / 88_775.0) % 30.0;
-        self.external_radiation_msv_h = if (12.0..12.5).contains(&sol_phase) {
-            0.8
-        } else {
-            0.025 + 0.008 * (std::f64::consts::TAU * sol_phase).sin().abs()
-        };
         let shielding_factor = if self.habitat_isolated { 0.09 } else { 0.12 };
         self.internal_radiation_msv_h = self.external_radiation_msv_h * shielding_factor;
         self.cumulative_internal_dose_msv += self.internal_radiation_msv_h * dt_hours;
@@ -1334,7 +1331,7 @@ mod tests {
     fn power_balance_closes_each_step() {
         let mut power = PowerSimulation::new();
         for _ in 0..10_000 {
-            let snapshot = power.step(0.05, true, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
+            let snapshot = power.step(0.05, true, 450.0, 0.2, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-9);
             assert!(snapshot.battery_energy_kwh >= 0.0);
             assert!(snapshot.battery_energy_kwh <= 500.0);
@@ -1342,11 +1339,28 @@ mod tests {
     }
 
     #[test]
+    fn shared_environment_inputs_are_authoritative_across_consumers() {
+        let mut power = PowerSimulation::new();
+        let power_snapshot = power.step(1.0, true, 321.5, 1.25, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
+        assert_eq!(power_snapshot.solar_irradiance_w_m2, 321.5);
+        assert_eq!(power_snapshot.dust_opacity, 1.25);
+
+        let mut thermal = ThermalSimulation::new();
+        let thermal_snapshot = thermal.step(1.0, true, true, 12.0, 5.0, 0.0, 45.0, -91.25);
+        assert_eq!(thermal_snapshot.mars_ambient_temp_c, -91.25);
+
+        let mut safety = SafetySimulation::new();
+        let safety_snapshot = safety.step(1.0, true, true, true, 0.734, 0.42);
+        assert_eq!(safety_snapshot.exterior_pressure_kpa, 0.734);
+        assert_eq!(safety_snapshot.external_radiation_msv_h, 0.42);
+        assert!(safety_snapshot.alarm_radiation);
+    }
+
+    #[test]
     fn battery_discharges_during_martian_night() {
         let mut power = PowerSimulation::new();
-        power.sim_time_sec = MARS_SOL_SEC * 0.5;
         let opening_energy = power.battery_energy_kwh;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 0.0, 0.2, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
         assert_eq!(snapshot.solar_available_kw, 0.0);
         assert!(snapshot.battery_power_kw < 0.0);
         assert!(snapshot.battery_energy_kwh < opening_energy);
@@ -1356,10 +1370,9 @@ mod tests {
     #[test]
     fn depleted_storage_sheds_flexible_load_and_reports_unserved_power() {
         let mut power = PowerSimulation::new();
-        power.sim_time_sec = MARS_SOL_SEC * 0.5;
         power.fission_capacity_kw = 0.0;
         power.battery_energy_kwh = 0.0;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 0.0, 0.2, 12.0, 4.0, 4.5, 2.4, 1.5, 5.0, 2.0);
         assert!(snapshot.load_shed_active);
         assert_eq!(snapshot.flexible_load_kw, 13.0);
         assert_eq!(snapshot.requested_load_kw, snapshot.critical_load_kw);
@@ -1430,7 +1443,7 @@ mod tests {
     fn power_state_round_trip_preserves_energy_and_integrals() {
         let mut power = PowerSimulation::new();
         for _ in 0..100 {
-            power.step(1.0, true, 11.0, 4.0, 4.5, 2.4, 1.5, 4.0, 1.0);
+            power.step(1.0, true, 450.0, 0.2, 11.0, 4.0, 4.5, 2.4, 1.5, 4.0, 1.0);
         }
         let restored: PowerSimulation =
             serde_json::from_slice(&serde_json::to_vec(&power).unwrap()).unwrap();
@@ -1445,7 +1458,7 @@ mod tests {
     fn thermal_energy_balance_closes_each_step() {
         let mut thermal = ThermalSimulation::new();
         for _ in 0..20_000 {
-            let snapshot = thermal.step(0.05, true, true, 12.0, 5.0, 0.0, 45.0);
+            let snapshot = thermal.step(0.05, true, true, 12.0, 5.0, 0.0, 45.0, -63.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-8);
             assert!(snapshot.stored_thermal_energy_mj.is_finite());
         }
@@ -1455,7 +1468,7 @@ mod tests {
     fn loss_of_active_cooling_eventually_overheats_habitat() {
         let mut thermal = ThermalSimulation::new();
         for _ in 0..20_000 {
-            thermal.step(1.0, false, false, 15.0, 6.0, 0.0, 50.0);
+            thermal.step(1.0, false, false, 15.0, 6.0, 0.0, 50.0, -63.0);
         }
         let snapshot = thermal.snapshot();
         assert!(snapshot.habitat_temp_c > 30.0);
@@ -1467,7 +1480,7 @@ mod tests {
     fn thermal_state_round_trip_preserves_energy_ledger() {
         let mut thermal = ThermalSimulation::new();
         for _ in 0..100 {
-            thermal.step(1.0, true, true, 12.0, 5.0, 0.0, 45.0);
+            thermal.step(1.0, true, true, 12.0, 5.0, 0.0, 45.0, -63.0);
         }
         let restored: ThermalSimulation =
             serde_json::from_slice(&serde_json::to_vec(&thermal).unwrap()).unwrap();
@@ -1537,7 +1550,7 @@ mod tests {
         let mut safety = SafetySimulation::new();
         safety.injected_leak_kg_s = 0.002;
         for _ in 0..10_000 {
-            let snapshot = safety.step(0.05, true, true, true);
+            let snapshot = safety.step(0.05, true, true, true, 0.61, 0.025);
             assert!(snapshot.instantaneous_mass_balance_error_kgph.abs() < 1.0e-7);
             assert!(snapshot.habitat_air_mass_kg >= 0.0);
         }
@@ -1553,7 +1566,7 @@ mod tests {
         safety.fire_source_kw = 30.0;
         let opening_pressure = safety.snapshot().habitat_pressure_kpa;
         for _ in 0..600 {
-            safety.step(1.0, false, false, false);
+            safety.step(1.0, false, false, false, 0.61, 0.025);
         }
         let snapshot = safety.snapshot();
         assert!(!snapshot.monitoring_available);
@@ -1571,7 +1584,7 @@ mod tests {
         safety.fire_source_kw = 30.0;
         let opening_agent = safety.suppression_agent_kg;
         for _ in 0..3_600 {
-            safety.step(1.0, true, true, true);
+            safety.step(1.0, true, true, true, 0.61, 0.025);
         }
         let snapshot = safety.snapshot();
         assert!(snapshot.fire_heat_release_kw < 5.0);
@@ -1584,7 +1597,7 @@ mod tests {
         let mut safety = SafetySimulation::new();
         safety.injected_leak_kg_s = 0.001;
         for _ in 0..100 {
-            safety.step(1.0, true, true, true);
+            safety.step(1.0, true, true, true, 0.61, 0.025);
         }
         let restored: SafetySimulation =
             serde_json::from_slice(&serde_json::to_vec(&safety).unwrap()).unwrap();

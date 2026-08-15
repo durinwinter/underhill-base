@@ -6,6 +6,13 @@ pub const CATALOG_SCHEMA_VERSION: u32 = 1;
 pub const FULL_BASE_TAG_COUNT: usize = 110_000;
 
 const MODEL_BACKED_TAG_IDS: &[&str] = &[
+    "underhill.v1.environment.00000.true_value",
+    "underhill.v1.environment.00000.measured_value",
+    "underhill.v1.environment.00000.residual",
+    "underhill.v1.environment.00000.alarm_active",
+    "underhill.v1.environment.00000.quality_code",
+    "underhill.v1.environment.00000.health_state",
+    "underhill.v1.environment.00000.runtime_hours",
     "underhill.v1.eclss.00000.pressure",
     "underhill.v1.eclss.00000.oxygen",
     "underhill.v1.eclss.00000.carbon_dioxide",
@@ -1044,8 +1051,8 @@ mod tests {
             catalog.stats.subsystem_counts["cross_plant_diagnostics"],
             8_000
         );
-        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_972);
-        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 28);
+        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_965);
+        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 35);
         let robotics_quantity = catalog
             .tags()
             .iter()

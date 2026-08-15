@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     PeaRuntimeState,
+    environment::EnvironmentSimulation,
     maintenance::MaintenanceSimulation,
     subsystems::{
         EclssSimulation, PowerSimulation, SabatierSimulation, SafetySimulation, ThermalSimulation,
@@ -229,6 +230,31 @@ struct MaintenanceNodes {
     service_available: NodeId,
 }
 
+#[derive(Clone)]
+struct EnvironmentNodes {
+    endpoint_url: NodeId,
+    security_mode: NodeId,
+    service_state: NodeId,
+    deployed: NodeId,
+    running: NodeId,
+    mars_sol: NodeId,
+    sol_fraction: NodeId,
+    solar_longitude_deg: NodeId,
+    ambient_temperature_c: NodeId,
+    exterior_pressure_kpa: NodeId,
+    wind_speed_m_s: NodeId,
+    wind_direction_deg: NodeId,
+    dust_optical_depth: NodeId,
+    dust_deposition_mg_m2_h: NodeId,
+    top_of_atmosphere_solar_w_m2: NodeId,
+    surface_solar_irradiance_w_m2: NodeId,
+    external_radiation_msv_h: NodeId,
+    monitoring_available: NodeId,
+    alarm_dust_storm: NodeId,
+    alarm_high_wind: NodeId,
+    alarm_solar_particle_event: NodeId,
+}
+
 pub fn spawn_eclss_opcua_server(
     sim: Arc<RwLock<EclssSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
@@ -372,6 +398,27 @@ pub fn spawn_maintenance_opcua_server(
     tokio::spawn(async move {
         if let Err(err) = run_maintenance_opcua_server(sim, runtime, config).await {
             error!("Maintenance OPC UA server exited with error: {err}");
+        }
+    });
+}
+
+pub fn spawn_environment_opcua_server(
+    sim: Arc<RwLock<EnvironmentSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    port: u16,
+    security_profile: String,
+) {
+    let config = SubsystemOpcuaConfig::new(
+        port,
+        "/underhill/environment",
+        "./pki/environment",
+        security_profile,
+        "Underhill Mars Environment OPC UA Server",
+        "urn:underhill:environment:opcua-server",
+    );
+    tokio::spawn(async move {
+        if let Err(err) = run_environment_opcua_server(sim, runtime, config).await {
+            error!("Environment OPC UA server exited with error: {err}");
         }
     });
 }
@@ -1181,6 +1228,128 @@ async fn run_maintenance_opcua_server(
                 values.into_iter().map(|(node, value)| (node, None, value)),
             ) {
                 warn!("Failed updating Maintenance OPC UA values: {err}");
+            }
+        }
+    });
+    run_server(server, &config).await?;
+    handle.cancel();
+    let _ = sync_task.await;
+    Ok(())
+}
+
+async fn run_environment_opcua_server(
+    sim: Arc<RwLock<EnvironmentSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    config: SubsystemOpcuaConfig,
+) -> anyhow::Result<()> {
+    let namespace_uri = "urn:underhill:environment:mtp";
+    let (server, handle) = build_server(&config, namespace_uri)?;
+    let manager = handle
+        .node_managers()
+        .get_of_type::<SimpleNodeManager>()
+        .ok_or_else(|| anyhow::anyhow!("SimpleNodeManager not available for Environment"))?;
+    let ns = handle
+        .get_namespace_index(namespace_uri)
+        .ok_or_else(|| anyhow::anyhow!("Namespace index unavailable for Environment"))?;
+    let nodes = build_environment_address_space(ns, &manager);
+    let subscriptions = handle.subscriptions().clone();
+    let server_handle = handle.clone();
+    let endpoint_url = config.endpoint_url();
+    let security_profile = config.security_profile.clone();
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = server_handle.token().cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            let snapshot = sim.read().await.snapshot();
+            let runtime_state = *runtime.read().await;
+            let values = vec![
+                (
+                    &nodes.endpoint_url,
+                    DataValue::new_now(endpoint_url.clone()),
+                ),
+                (
+                    &nodes.security_mode,
+                    DataValue::new_now(security_profile.clone()),
+                ),
+                (
+                    &nodes.service_state,
+                    DataValue::new_now(state_for_runtime(runtime_state)),
+                ),
+                (&nodes.deployed, DataValue::new_now(runtime_state.deployed)),
+                (&nodes.running, DataValue::new_now(runtime_state.running)),
+                (
+                    &nodes.mars_sol,
+                    DataValue::new_now(snapshot.mars_sol as i64),
+                ),
+                (
+                    &nodes.sol_fraction,
+                    DataValue::new_now(snapshot.sol_fraction),
+                ),
+                (
+                    &nodes.solar_longitude_deg,
+                    DataValue::new_now(snapshot.solar_longitude_deg),
+                ),
+                (
+                    &nodes.ambient_temperature_c,
+                    DataValue::new_now(snapshot.ambient_temperature_c),
+                ),
+                (
+                    &nodes.exterior_pressure_kpa,
+                    DataValue::new_now(snapshot.exterior_pressure_kpa),
+                ),
+                (
+                    &nodes.wind_speed_m_s,
+                    DataValue::new_now(snapshot.wind_speed_m_s),
+                ),
+                (
+                    &nodes.wind_direction_deg,
+                    DataValue::new_now(snapshot.wind_direction_deg),
+                ),
+                (
+                    &nodes.dust_optical_depth,
+                    DataValue::new_now(snapshot.dust_optical_depth),
+                ),
+                (
+                    &nodes.dust_deposition_mg_m2_h,
+                    DataValue::new_now(snapshot.dust_deposition_mg_m2_h),
+                ),
+                (
+                    &nodes.top_of_atmosphere_solar_w_m2,
+                    DataValue::new_now(snapshot.top_of_atmosphere_solar_w_m2),
+                ),
+                (
+                    &nodes.surface_solar_irradiance_w_m2,
+                    DataValue::new_now(snapshot.surface_solar_irradiance_w_m2),
+                ),
+                (
+                    &nodes.external_radiation_msv_h,
+                    DataValue::new_now(snapshot.external_radiation_msv_h),
+                ),
+                (
+                    &nodes.monitoring_available,
+                    DataValue::new_now(snapshot.monitoring_available),
+                ),
+                (
+                    &nodes.alarm_dust_storm,
+                    DataValue::new_now(snapshot.alarm_dust_storm),
+                ),
+                (
+                    &nodes.alarm_high_wind,
+                    DataValue::new_now(snapshot.alarm_high_wind),
+                ),
+                (
+                    &nodes.alarm_solar_particle_event,
+                    DataValue::new_now(snapshot.alarm_solar_particle_event),
+                ),
+            ];
+            if let Err(err) = manager.set_values(
+                &subscriptions,
+                values.into_iter().map(|(node, value)| (node, None, value)),
+            ) {
+                warn!("Failed updating Environment OPC UA values: {err}");
             }
         }
     });
@@ -2557,6 +2726,145 @@ fn build_maintenance_address_space(
         warehouse_spares_total,
         power_kw,
         service_available,
+    }
+}
+
+fn build_environment_address_space(
+    ns: u16,
+    manager: &Arc<opcua::server::node_manager::memory::InMemoryNodeManager<SimpleNodeManagerImpl>>,
+) -> EnvironmentNodes {
+    let underhill = NodeId::new(ns, "Underhill");
+    let pea = NodeId::new(ns, "Underhill.EnvironmentPEA");
+    let diagnostics = NodeId::new(ns, "Underhill.EnvironmentPEA.Diagnostics");
+    let services = NodeId::new(ns, "Underhill.EnvironmentPEA.Services");
+    let service = NodeId::new(ns, "Underhill.EnvironmentPEA.Services.EnvironmentService");
+    let control = NodeId::new(
+        ns,
+        "Underhill.EnvironmentPEA.Services.EnvironmentService.ServiceControl",
+    );
+    let data = NodeId::new(ns, "Underhill.EnvironmentPEA.DataAssemblies");
+    let atmosphere = NodeId::new(ns, "Underhill.EnvironmentPEA.DataAssemblies.Atmosphere");
+    let solar = NodeId::new(ns, "Underhill.EnvironmentPEA.DataAssemblies.Solar");
+    let dust = NodeId::new(ns, "Underhill.EnvironmentPEA.DataAssemblies.Dust");
+    let radiation = NodeId::new(ns, "Underhill.EnvironmentPEA.DataAssemblies.Radiation");
+    let alarms = NodeId::new(ns, "Underhill.EnvironmentPEA.DataAssemblies.Alarms");
+    let mut space = manager.address_space().write();
+    space.add_folder(
+        &underhill,
+        "Underhill",
+        "Underhill",
+        &NodeId::objects_folder_id(),
+    );
+    space.add_folder(&pea, "EnvironmentPEA", "EnvironmentPEA", &underhill);
+    for (node, browse, parent) in [
+        (&diagnostics, "Diagnostics", &pea),
+        (&services, "Services", &pea),
+        (&service, "EnvironmentService", &services),
+        (&control, "ServiceControl", &service),
+        (&data, "DataAssemblies", &pea),
+        (&atmosphere, "Atmosphere", &data),
+        (&solar, "Solar", &data),
+        (&dust, "Dust", &data),
+        (&radiation, "Radiation", &data),
+        (&alarms, "Alarms", &data),
+    ] {
+        space.add_folder(node, browse, browse, parent);
+    }
+    let node = |suffix: &str| NodeId::new(ns, format!("Underhill.EnvironmentPEA.{suffix}"));
+    let endpoint_url = node("Diagnostics.EndpointUrl");
+    let security_mode = node("Diagnostics.SecurityMode");
+    let service_state = node("Services.EnvironmentService.ServiceControl.State");
+    let deployed = node("Services.EnvironmentService.ServiceControl.Deployed");
+    let running = node("Services.EnvironmentService.ServiceControl.Running");
+    let mars_sol = node("DataAssemblies.Atmosphere.MarsSol");
+    let sol_fraction = node("DataAssemblies.Atmosphere.SolFraction");
+    let solar_longitude_deg = node("DataAssemblies.Atmosphere.SolarLongitudeDeg");
+    let ambient_temperature_c = node("DataAssemblies.Atmosphere.AmbientTemperatureC");
+    let exterior_pressure_kpa = node("DataAssemblies.Atmosphere.ExteriorPressureKpa");
+    let wind_speed_m_s = node("DataAssemblies.Atmosphere.WindSpeedMS");
+    let wind_direction_deg = node("DataAssemblies.Atmosphere.WindDirectionDeg");
+    let dust_optical_depth = node("DataAssemblies.Dust.OpticalDepth");
+    let dust_deposition_mg_m2_h = node("DataAssemblies.Dust.DepositionMgM2H");
+    let top_of_atmosphere_solar_w_m2 = node("DataAssemblies.Solar.TopOfAtmosphereWM2");
+    let surface_solar_irradiance_w_m2 = node("DataAssemblies.Solar.SurfaceIrradianceWM2");
+    let external_radiation_msv_h = node("DataAssemblies.Radiation.ExternalDoseRateMsvH");
+    let monitoring_available = node("DataAssemblies.Atmosphere.MonitoringAvailable");
+    let alarm_dust_storm = node("DataAssemblies.Alarms.DustStorm");
+    let alarm_high_wind = node("DataAssemblies.Alarms.HighWind");
+    let alarm_solar_particle_event = node("DataAssemblies.Alarms.SolarParticleEvent");
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &endpoint_url,
+        "EndpointUrl",
+        "",
+        false,
+    );
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &security_mode,
+        "SecurityMode",
+        "NONE",
+        false,
+    );
+    insert_var(&mut space, &control, &service_state, "State", "Idle", false);
+    insert_var(&mut space, &control, &deployed, "Deployed", true, false);
+    insert_var(&mut space, &control, &running, "Running", true, false);
+    insert_var(&mut space, &atmosphere, &mars_sol, "MarsSol", 0i64, false);
+    for (id, browse, parent) in [
+        (&sol_fraction, "SolFraction", &atmosphere),
+        (&solar_longitude_deg, "SolarLongitudeDeg", &atmosphere),
+        (&ambient_temperature_c, "AmbientTemperatureC", &atmosphere),
+        (&exterior_pressure_kpa, "ExteriorPressureKpa", &atmosphere),
+        (&wind_speed_m_s, "WindSpeedMS", &atmosphere),
+        (&wind_direction_deg, "WindDirectionDeg", &atmosphere),
+        (&dust_optical_depth, "OpticalDepth", &dust),
+        (&dust_deposition_mg_m2_h, "DepositionMgM2H", &dust),
+        (&top_of_atmosphere_solar_w_m2, "TopOfAtmosphereWM2", &solar),
+        (
+            &surface_solar_irradiance_w_m2,
+            "SurfaceIrradianceWM2",
+            &solar,
+        ),
+        (
+            &external_radiation_msv_h,
+            "ExternalDoseRateMsvH",
+            &radiation,
+        ),
+    ] {
+        insert_var(&mut space, parent, id, browse, 0.0f64, false);
+    }
+    for (id, browse, parent) in [
+        (&monitoring_available, "MonitoringAvailable", &atmosphere),
+        (&alarm_dust_storm, "DustStorm", &alarms),
+        (&alarm_high_wind, "HighWind", &alarms),
+        (&alarm_solar_particle_event, "SolarParticleEvent", &alarms),
+    ] {
+        insert_var(&mut space, parent, id, browse, false, false);
+    }
+    EnvironmentNodes {
+        endpoint_url,
+        security_mode,
+        service_state,
+        deployed,
+        running,
+        mars_sol,
+        sol_fraction,
+        solar_longitude_deg,
+        ambient_temperature_c,
+        exterior_pressure_kpa,
+        wind_speed_m_s,
+        wind_direction_deg,
+        dust_optical_depth,
+        dust_deposition_mg_m2_h,
+        top_of_atmosphere_solar_w_m2,
+        surface_solar_irradiance_w_m2,
+        external_radiation_msv_h,
+        monitoring_available,
+        alarm_dust_storm,
+        alarm_high_wind,
+        alarm_solar_particle_event,
     }
 }
 

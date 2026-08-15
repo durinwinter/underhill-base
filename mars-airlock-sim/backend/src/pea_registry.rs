@@ -17,6 +17,7 @@ pub const DEFAULT_THERMAL_PEA_ID: &str = "THERMAL-PEA-001";
 pub const DEFAULT_WATER_PEA_ID: &str = "WATER-PEA-001";
 pub const DEFAULT_SAFETY_PEA_ID: &str = "SAFETY-PEA-001";
 pub const DEFAULT_MAINTENANCE_PEA_ID: &str = "ROBOTICS-PEA-001";
+pub const DEFAULT_ENVIRONMENT_PEA_ID: &str = "ENVIRONMENT-PEA-001";
 
 pub const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
 pub const ECLSS_SERVICE_TAG: &str = "EclssService";
@@ -26,8 +27,9 @@ pub const THERMAL_SERVICE_TAG: &str = "ThermalService";
 pub const WATER_SERVICE_TAG: &str = "WaterService";
 pub const SAFETY_SERVICE_TAG: &str = "SafetyService";
 pub const MAINTENANCE_SERVICE_TAG: &str = "MaintenanceService";
+pub const ENVIRONMENT_SERVICE_TAG: &str = "EnvironmentService";
 
-pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 8] = [
+pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 9] = [
     PeaDefinition {
         pea_id: DEFAULT_AIRLOCK_PEA_ID,
         pea_type: "AIRLOCK",
@@ -99,6 +101,15 @@ pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 8] = [
         namespace_uri: "urn:underhill:maintenance:mtp",
         endpoint_path: "/underhill/maintenance",
         root_path: "Objects/Underhill/MaintenancePEA",
+    },
+    PeaDefinition {
+        pea_id: DEFAULT_ENVIRONMENT_PEA_ID,
+        pea_type: "MARS_ENVIRONMENT",
+        name: "Underhill Mars Environment",
+        service_tag: ENVIRONMENT_SERVICE_TAG,
+        namespace_uri: "urn:underhill:environment:mtp",
+        endpoint_path: "/underhill/environment",
+        root_path: "Objects/Underhill/EnvironmentPEA",
     },
 ];
 
