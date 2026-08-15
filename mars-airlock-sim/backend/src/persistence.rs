@@ -29,6 +29,8 @@ pub struct PlantCheckpoint {
     pub schema_version: u32,
     pub plant_id: String,
     pub saved_wall_time_ms: u64,
+    #[serde(default)]
+    pub journal_sequence: u64,
     pub scheduler: PlantSchedulerState,
     pub airlock: Simulation,
     pub eclss: EclssSimulation,
@@ -44,6 +46,7 @@ impl PlantCheckpoint {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         plant_id: String,
+        journal_sequence: u64,
         scheduler: PlantSchedulerState,
         airlock: Simulation,
         eclss: EclssSimulation,
@@ -58,6 +61,7 @@ impl PlantCheckpoint {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
             plant_id,
             saved_wall_time_ms: wall_time_ms(),
+            journal_sequence,
             scheduler,
             airlock,
             eclss,
@@ -174,6 +178,13 @@ impl PlantPersistence {
         self.checkpoint_interval_sec
     }
 
+    pub fn journal_sequence(&self) -> Result<u64> {
+        self.journal_sequence
+            .lock()
+            .map(|sequence| *sequence)
+            .map_err(|_| anyhow::anyhow!("journal sequence mutex poisoned"))
+    }
+
     pub fn load_checkpoint(&self) -> Result<Option<PlantCheckpoint>> {
         match read_checkpoint(&self.checkpoint_path, &self.plant_id) {
             Ok(Some(checkpoint)) => Ok(Some(checkpoint)),
@@ -188,6 +199,31 @@ impl PlantPersistence {
                 }
             }
         }
+    }
+
+    pub fn journal_records_after(&self, sequence: u64) -> Result<Vec<JournalRecord>> {
+        let payload = match fs::read(&self.journal_path) {
+            Ok(payload) => payload,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to read {}", self.journal_path.display()));
+            }
+        };
+        let mut records = Vec::new();
+        let mut last_sequence = 0;
+        for (line_index, line) in payload.split(|byte| *byte == b'\n').enumerate() {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let record: JournalRecord = serde_json::from_slice(line)
+                .with_context(|| format!("invalid journal record at line {}", line_index + 1))?;
+            validate_journal_record(&record, line_index + 1, &mut last_sequence)?;
+            if record.sequence > sequence {
+                records.push(record);
+            }
+        }
+        Ok(records)
     }
 
     pub fn save_checkpoint(&self, checkpoint: &PlantCheckpoint) -> Result<()> {
@@ -345,6 +381,14 @@ fn validate_journal_line(line: &[u8], line_number: usize, last_sequence: &mut u6
     }
     let record: JournalRecord = serde_json::from_slice(line)
         .with_context(|| format!("invalid journal record at line {line_number}"))?;
+    validate_journal_record(&record, line_number, last_sequence)
+}
+
+fn validate_journal_record(
+    record: &JournalRecord,
+    line_number: usize,
+    last_sequence: &mut u64,
+) -> Result<()> {
     if record.schema_version != JOURNAL_SCHEMA_VERSION {
         bail!(
             "unsupported journal schema version {} at line {}",
@@ -383,6 +427,7 @@ mod tests {
         sim::Simulation,
         subsystems::{EclssSimulation, SabatierSimulation},
     };
+    use std::sync::Arc;
 
     fn temp_state_dir(test_name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -395,6 +440,7 @@ mod tests {
     fn sample_checkpoint(plant_id: &str, elapsed: f64) -> PlantCheckpoint {
         PlantCheckpoint::new(
             plant_id.to_string(),
+            0,
             PlantSchedulerState {
                 accumulated_sim_sec: 0.0,
                 plant_elapsed_sec: elapsed,
@@ -433,6 +479,7 @@ mod tests {
             .unwrap();
         let loaded = persistence.load_checkpoint().unwrap().unwrap();
         assert!((loaded.scheduler.plant_elapsed_sec - 123.45).abs() < 1.0e-12);
+        assert_eq!(loaded.journal_sequence, 0);
         assert!(loaded.airlock_runtime.running);
         assert!(!loaded.sabatier_runtime.running);
         assert!((loaded.eclss.snapshot().co2_ppm - 950.0).abs() < 1.0e-12);
@@ -531,6 +578,82 @@ mod tests {
         assert_eq!(next.sequence, 8);
         let payload = fs::read(&journal_path).unwrap();
         assert_eq!(payload.iter().filter(|byte| **byte == b'\n').count(), 2);
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_cursor_selects_only_unapplied_journal_tail() {
+        let state_dir = temp_state_dir("checkpoint-journal-cursor");
+        let persistence =
+            PlantPersistence::new(state_dir.clone(), "test-plant".to_string(), 60.0).unwrap();
+        persistence
+            .append_journal(1.0, "command", "before", serde_json::json!({}))
+            .unwrap();
+        let mut checkpoint = sample_checkpoint("test-plant", 1.0);
+        checkpoint.journal_sequence = persistence.journal_sequence().unwrap();
+        persistence.save_checkpoint(&checkpoint).unwrap();
+        persistence
+            .append_journal(2.0, "command", "after", serde_json::json!({}))
+            .unwrap();
+
+        let loaded = persistence.load_checkpoint().unwrap().unwrap();
+        assert_eq!(loaded.journal_sequence, 1);
+        let tail = persistence
+            .journal_records_after(loaded.journal_sequence)
+            .unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].sequence, 2);
+        assert_eq!(tail[0].subject, "after");
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn transaction_gate_gives_checkpoint_a_total_journal_order() {
+        let state_dir = temp_state_dir("transaction-cursor-order");
+        let persistence = Arc::new(
+            PlantPersistence::new(state_dir.clone(), "test-plant".to_string(), 60.0).unwrap(),
+        );
+        let transaction = Arc::new(tokio::sync::Mutex::new(()));
+        let mut tasks = Vec::new();
+        for index in 0..32_u64 {
+            let persistence = persistence.clone();
+            let transaction = transaction.clone();
+            tasks.push(tokio::spawn(async move {
+                let _guard = transaction.lock().await;
+                persistence
+                    .append_journal(
+                        index as f64,
+                        "command",
+                        format!("command-{index}"),
+                        serde_json::json!({}),
+                    )
+                    .unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        let _guard = transaction.lock().await;
+        let cursor = persistence.journal_sequence().unwrap();
+        let mut checkpoint = sample_checkpoint("test-plant", 32.0);
+        checkpoint.journal_sequence = cursor;
+        persistence.save_checkpoint(&checkpoint).unwrap();
+        assert_eq!(cursor, 32);
+        assert!(
+            persistence
+                .journal_records_after(cursor)
+                .unwrap()
+                .is_empty()
+        );
+        drop(_guard);
+
+        persistence
+            .append_journal(33.0, "command", "after", serde_json::json!({}))
+            .unwrap();
+        let tail = persistence.journal_records_after(cursor).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].sequence, 33);
         fs::remove_dir_all(state_dir).unwrap();
     }
 }

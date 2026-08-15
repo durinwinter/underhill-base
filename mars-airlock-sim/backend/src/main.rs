@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
     net::TcpListener,
-    sync::{RwLock, broadcast, watch},
+    sync::{Mutex, RwLock, broadcast, watch},
     time,
 };
 use tower_http::{
@@ -97,6 +97,8 @@ struct PlantRecoveryStatus {
     downtime_policy: DowntimePolicy,
     checkpoint_age_sec: f64,
     queued_catchup_sec: f64,
+    journal_tail_records: usize,
+    unapplied_state_records: usize,
 }
 
 #[derive(Clone)]
@@ -118,6 +120,7 @@ struct AppContext {
     plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
     plant_persistence: Arc<PlantPersistence>,
     plant_recovery: PlantRecoveryStatus,
+    plant_transaction: Arc<Mutex<()>>,
     opcua_control: opcua::OpcuaControl,
     next_client_id: Arc<AtomicU64>,
 }
@@ -298,6 +301,18 @@ async fn main() -> anyhow::Result<()> {
         plant_recovery,
     ) = match restored_checkpoint {
         Some(mut checkpoint) => {
+            let journal_tail =
+                plant_persistence.journal_records_after(checkpoint.journal_sequence)?;
+            let unapplied_state_records = journal_tail
+                .iter()
+                .filter(|record| is_state_journal_kind(&record.kind))
+                .count();
+            if unapplied_state_records > 0 {
+                warn!(
+                    "Checkpoint has {} durable state record(s) in its journal tail; deterministic state replay is required before this boundary is production-safe",
+                    unapplied_state_records
+                );
+            }
             checkpoint
                 .airlock
                 .prepare_after_restore(opcua_endpoint_url.clone());
@@ -335,6 +350,8 @@ async fn main() -> anyhow::Result<()> {
                     downtime_policy: plant_runtime_config.downtime_policy,
                     checkpoint_age_sec,
                     queued_catchup_sec,
+                    journal_tail_records: journal_tail.len(),
+                    unapplied_state_records,
                 },
             )
         }
@@ -353,6 +370,8 @@ async fn main() -> anyhow::Result<()> {
                 downtime_policy: plant_runtime_config.downtime_policy,
                 checkpoint_age_sec: 0.0,
                 queued_catchup_sec: 0.0,
+                journal_tail_records: 0,
+                unapplied_state_records: 0,
             },
         ),
     };
@@ -386,8 +405,15 @@ async fn main() -> anyhow::Result<()> {
         serde_json::to_value(plant_recovery)?,
     )?;
 
-    let opcua_control =
-        opcua::spawn_opcua_server(sim.clone(), snapshots_tx.clone(), opcua_runtime_config);
+    let plant_transaction = Arc::new(Mutex::new(()));
+    let opcua_control = opcua::spawn_opcua_server(
+        sim.clone(),
+        snapshots_tx.clone(),
+        opcua_runtime_config,
+        plant_transaction.clone(),
+        plant_persistence.clone(),
+        plant_runtime.clone(),
+    );
     opcua_subsystems::spawn_eclss_opcua_server(
         eclss_sim.clone(),
         eclss_runtime.clone(),
@@ -418,6 +444,7 @@ async fn main() -> anyhow::Result<()> {
         plant_runtime,
         plant_persistence,
         plant_recovery,
+        plant_transaction,
         opcua_control,
         next_client_id: Arc::new(AtomicU64::new(1)),
     };
@@ -545,6 +572,22 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn is_state_journal_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "pea_lifecycle"
+            | "operator_state_changed"
+            | "service_command_processed"
+            | "security_profile_changed"
+            | "permissions_changed"
+            | "operating_mode_changed"
+            | "fault_injected"
+            | "command_processed"
+            | "opcua_command_processed"
+            | "procedure_requested"
+    )
+}
+
 fn spawn_simulation_task(
     context: AppContext,
     mut scheduler: PlantScheduler,
@@ -601,6 +644,7 @@ fn spawn_simulation_task(
             let mut eclss_snapshot = None;
             let mut sabatier_snapshot = None;
             for _ in 0..steps_due {
+                let _transaction = context.plant_transaction.lock().await;
                 let scheduled = scheduler.advance_fixed_step();
                 let mut sim = context.sim.write().await;
                 sim.step(scheduled.fixed_step_sec);
@@ -775,9 +819,10 @@ async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
 async fn capture_plant_checkpoint(
     context: &AppContext,
     scheduler: PlantSchedulerState,
-) -> PlantCheckpoint {
-    PlantCheckpoint::new(
+) -> anyhow::Result<PlantCheckpoint> {
+    Ok(PlantCheckpoint::new(
         context.plant_persistence.plant_id().to_string(),
+        context.plant_persistence.journal_sequence()?,
         scheduler,
         context.sim.read().await.clone(),
         context.eclss_sim.read().await.clone(),
@@ -787,7 +832,7 @@ async fn capture_plant_checkpoint(
         *context.sabatier_runtime.read().await,
         context.eclss_operator_state.read().await.clone(),
         context.sabatier_operator_state.read().await.clone(),
-    )
+    ))
 }
 
 async fn save_plant_checkpoint(
@@ -795,7 +840,8 @@ async fn save_plant_checkpoint(
     scheduler: PlantSchedulerState,
     journal_kind: &'static str,
 ) -> anyhow::Result<()> {
-    let checkpoint = capture_plant_checkpoint(context, scheduler).await;
+    let _transaction = context.plant_transaction.lock().await;
+    let checkpoint = capture_plant_checkpoint(context, scheduler).await?;
     let persistence = context.plant_persistence.clone();
     tokio::task::spawn_blocking(move || {
         persistence.save_checkpoint(&checkpoint)?;
@@ -836,6 +882,10 @@ async fn journal_operation(
 
 async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
     let plant_runtime = *context.plant_runtime.read().await;
+    let journal_sequence = context
+        .plant_persistence
+        .journal_sequence()
+        .unwrap_or_default();
     axum::Json(json!({
         "status": "ok",
         "service": "underhill-base-backend",
@@ -843,7 +893,8 @@ async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
         "plant_recovery": context.plant_recovery,
         "persistence": {
             "plant_id": context.plant_persistence.plant_id(),
-            "checkpoint_interval_sec": context.plant_persistence.checkpoint_interval_sec()
+            "checkpoint_interval_sec": context.plant_persistence.checkpoint_interval_sec(),
+            "journal_sequence": journal_sequence
         }
     }))
 }
@@ -991,6 +1042,7 @@ async fn api_v1_deploy_pea(
     Path(pea_id): Path<String>,
     State(context): State<AppContext>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
     let transition_ms = Simulation::now_ms();
 
     if pea_id == DEFAULT_AIRLOCK_PEA_ID {
@@ -1078,6 +1130,7 @@ async fn api_v1_start_pea(
     Path(pea_id): Path<String>,
     State(context): State<AppContext>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
     let transition_ms = Simulation::now_ms();
 
     if pea_id == DEFAULT_AIRLOCK_PEA_ID {
@@ -1154,6 +1207,7 @@ async fn api_v1_stop_pea(
     Path(pea_id): Path<String>,
     State(context): State<AppContext>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
     let transition_ms = Simulation::now_ms();
 
     if pea_id == DEFAULT_AIRLOCK_PEA_ID {
@@ -1230,6 +1284,7 @@ async fn api_v1_undeploy_pea(
     Path(pea_id): Path<String>,
     State(context): State<AppContext>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
     let transition_ms = Simulation::now_ms();
 
     if pea_id == DEFAULT_AIRLOCK_PEA_ID {
@@ -1361,6 +1416,7 @@ async fn api_v1_set_subsystem_operator_state(
     State(context): State<AppContext>,
     axum::Json(payload): axum::Json<SubsystemOperatorStateUpdateRequest>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
     if pea_id == DEFAULT_ECLSS_PEA_ID {
         let mut operator_state = context.eclss_operator_state.write().await;
         if let Some(value) = payload.operation_mode {
@@ -2097,6 +2153,7 @@ async fn api_v1_pea_service_command(
     State(context): State<AppContext>,
     axum::Json(payload): axum::Json<PeaServiceCommandRequest>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
     if pea_id != DEFAULT_AIRLOCK_PEA_ID {
         return Err((
             StatusCode::NOT_IMPLEMENTED,
@@ -2156,6 +2213,22 @@ async fn api_v1_pea_service_command(
     };
 
     let _ = context.snapshots_tx.send(snapshot.clone());
+    journal_operation(
+        &context,
+        "service_command_processed",
+        pea_id.clone(),
+        json!({
+            "service_tag": service_tag,
+            "source": source_str,
+            "sequence_id": payload.sequence_id,
+            "command": payload.command,
+            "param1": payload.param1,
+            "param2": payload.param2,
+            "execute": payload.execute,
+            "response": &response
+        }),
+    )
+    .await;
     let runtime_state = *context.airlock_runtime.read().await;
     publish_pea_uns(&context, &snapshot, runtime_state).await;
     Ok(axum::Json(json!({
@@ -2179,7 +2252,6 @@ async fn api_set_security_profile(
             ),
         );
     };
-
     if let Err(err) = context
         .opcua_control
         .set_security_profile(normalized.clone())
@@ -2191,6 +2263,7 @@ async fn api_set_security_profile(
         );
     }
 
+    let _transaction = context.plant_transaction.lock().await;
     let snapshot = {
         let mut sim = context.sim.write().await;
         sim.set_security_profile(&normalized);
@@ -2214,6 +2287,7 @@ async fn api_set_permissions(
     State(context): State<AppContext>,
     axum::Json(payload): axum::Json<PermissionsUpdateRequest>,
 ) -> impl IntoResponse {
+    let _transaction = context.plant_transaction.lock().await;
     let snapshot = {
         let mut sim = context.sim.write().await;
         sim.set_permissions(payload);
@@ -2234,6 +2308,7 @@ async fn api_set_modes(
     State(context): State<AppContext>,
     axum::Json(payload): axum::Json<MtpModesUpdateRequest>,
 ) -> impl IntoResponse {
+    let _transaction = context.plant_transaction.lock().await;
     let snapshot = {
         let mut sim = context.sim.write().await;
         sim.set_modes(payload);
@@ -2263,6 +2338,7 @@ async fn api_set_leak_rate(
     State(context): State<AppContext>,
     axum::Json(payload): axum::Json<LeakRateUpdateRequest>,
 ) -> impl IntoResponse {
+    let _transaction = context.plant_transaction.lock().await;
     let snapshot = {
         let mut sim = context.sim.write().await;
         sim.set_leak_rate(payload);
@@ -2286,7 +2362,9 @@ async fn api_write_command(
 ) -> Result<axum::Json<CommandResponseFields>, (StatusCode, String)> {
     let source = parse_command_source(&source)
         .ok_or((StatusCode::BAD_REQUEST, "invalid source path".to_string()))?;
+    let _transaction = context.plant_transaction.lock().await;
 
+    let journal_request = payload.clone();
     let (response, snapshot) = {
         let mut sim = context.sim.write().await;
         let response = sim.write_request(source, payload);
@@ -2299,7 +2377,7 @@ async fn api_write_command(
         &context,
         "command_processed",
         DEFAULT_AIRLOCK_PEA_ID.to_string(),
-        json!({ "source": source, "response": &response }),
+        json!({ "source": source, "request": journal_request, "response": &response }),
     )
     .await;
     Ok(axum::Json(response))
@@ -3226,20 +3304,30 @@ async fn api_v2_request_procedure(
     .await?;
 
     let request_id = payload.request_id;
+    let _transaction = context.plant_transaction.lock().await;
 
-    // store request in simulation
+    let request = ProcedureRequest {
+        request_id,
+        procedure_id: 0, // placeholder
+        procedure_name: proc_name.clone(),
+        service_name: service_name.clone(),
+        pea_id: pea_id.clone(),
+        parameters: payload.parameters.unwrap_or_default(),
+        requested_at_ms: Simulation::now_ms(),
+    };
+
+    // Store and journal the request within the same plant transaction.
     {
         let mut sim = context.sim.write().await;
-        sim.request_procedure(ProcedureRequest {
-            request_id,
-            procedure_id: 0, // placeholder
-            procedure_name: proc_name.clone(),
-            service_name: service_name.clone(),
-            pea_id: pea_id.clone(),
-            parameters: payload.parameters.unwrap_or_default(),
-            requested_at_ms: Simulation::now_ms(),
-        });
+        sim.request_procedure(request.clone());
     }
+    journal_operation(
+        &context,
+        "procedure_requested",
+        pea_id,
+        serde_json::to_value(request).unwrap_or_else(|_| json!({})),
+    )
+    .await;
 
     Ok(axum::Json(ProcedureStatusResponse {
         request_id,

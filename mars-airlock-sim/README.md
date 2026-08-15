@@ -99,6 +99,9 @@ catch-up work. Catch-up is bounded and visible through `/api/health`; an excessi
 instead of silently inventing history. Setting the policy to `freeze` is an explicit fork behavior.
 SIGINT and SIGTERM coordinate HTTP shutdown with the plant scheduler and force a synced final
 checkpoint plus a `shutdown_checkpoint_saved` journal record before the backend exits.
+Physics steps, HTTP state mutations, OPC UA commands, operational journal appends, and checkpoint
+capture share a plant transaction gate. Each checkpoint records the exact journal sequence it
+covers, allowing recovery code to identify—not silently ignore—the durable post-checkpoint tail.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`

@@ -13,7 +13,7 @@ use opcua::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{RwLock, broadcast, mpsc, oneshot},
+    sync::{Mutex as AsyncMutex, RwLock, broadcast, mpsc, oneshot},
     task::JoinHandle,
 };
 use tracing::{error, info, warn};
@@ -22,6 +22,8 @@ use crate::model::{
     CommandEnum, CommandRequestFields, CommandSourceEnum, CommandStatusEnum, ProcedureRuntime,
     Snapshot,
 };
+use crate::persistence::PlantPersistence;
+use crate::plant_runtime::PlantRuntimeSnapshot;
 use crate::sim::Simulation;
 
 const NAMESPACE_URI: &str = "urn:mars-airlock:mtp";
@@ -232,10 +234,22 @@ pub fn spawn_opcua_server(
     sim: Arc<RwLock<Simulation>>,
     snapshots_tx: broadcast::Sender<Snapshot>,
     config: OpcuaRuntimeConfig,
+    plant_transaction: Arc<AsyncMutex<()>>,
+    plant_persistence: Arc<PlantPersistence>,
+    plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
 ) -> OpcuaControl {
     let (control_tx, control_rx) = mpsc::channel(8);
     tokio::spawn(async move {
-        run_opcua_supervisor(sim, snapshots_tx, control_rx, config).await;
+        run_opcua_supervisor(
+            sim,
+            snapshots_tx,
+            control_rx,
+            config,
+            plant_transaction,
+            plant_persistence,
+            plant_runtime,
+        )
+        .await;
     });
     OpcuaControl { tx: control_tx }
 }
@@ -245,6 +259,9 @@ async fn run_opcua_supervisor(
     snapshots_tx: broadcast::Sender<Snapshot>,
     mut control_rx: mpsc::Receiver<OpcuaControlCommand>,
     config: OpcuaRuntimeConfig,
+    plant_transaction: Arc<AsyncMutex<()>>,
+    plant_persistence: Arc<PlantPersistence>,
+    plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
 ) {
     let configured_profile = std::env::var("AIRLOCK_SECURITY_PROFILE")
         .unwrap_or_else(|_| "NONE".to_string())
@@ -260,16 +277,23 @@ async fn run_opcua_supervisor(
         }
     };
 
-    let mut instance =
-        match start_opcua_instance(&config, &active_profile, sim.clone(), snapshots_tx.clone())
-            .await
-        {
-            Ok(instance) => Some(instance),
-            Err(err) => {
-                error!("Initial OPC UA server startup failed: {err}");
-                None
-            }
-        };
+    let mut instance = match start_opcua_instance(
+        &config,
+        &active_profile,
+        sim.clone(),
+        snapshots_tx.clone(),
+        plant_transaction.clone(),
+        plant_persistence.clone(),
+        plant_runtime.clone(),
+    )
+    .await
+    {
+        Ok(instance) => Some(instance),
+        Err(err) => {
+            error!("Initial OPC UA server startup failed: {err}");
+            None
+        }
+    };
 
     while let Some(command) = control_rx.recv().await {
         match command {
@@ -291,8 +315,16 @@ async fn run_opcua_supervisor(
                     current.stop().await;
                 }
 
-                match start_opcua_instance(&config, &normalized, sim.clone(), snapshots_tx.clone())
-                    .await
+                match start_opcua_instance(
+                    &config,
+                    &normalized,
+                    sim.clone(),
+                    snapshots_tx.clone(),
+                    plant_transaction.clone(),
+                    plant_persistence.clone(),
+                    plant_runtime.clone(),
+                )
+                .await
                 {
                     Ok(next_instance) => {
                         info!(
@@ -310,6 +342,9 @@ async fn run_opcua_supervisor(
                             &active_profile,
                             sim.clone(),
                             snapshots_tx.clone(),
+                            plant_transaction.clone(),
+                            plant_persistence.clone(),
+                            plant_runtime.clone(),
                         )
                         .await
                         {
@@ -355,6 +390,9 @@ async fn start_opcua_instance(
     security_profile: &str,
     sim: Arc<RwLock<Simulation>>,
     snapshots_tx: broadcast::Sender<Snapshot>,
+    plant_transaction: Arc<AsyncMutex<()>>,
+    plant_persistence: Arc<PlantPersistence>,
+    plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
 ) -> anyhow::Result<OpcuaInstance> {
     let user_tokens = vec![ANONYMOUS_USER_TOKEN_ID.to_string()];
 
@@ -455,6 +493,9 @@ async fn start_opcua_instance(
         sim.clone(),
         snapshots_tx.clone(),
         handle.clone(),
+        plant_transaction.clone(),
+        plant_persistence,
+        plant_runtime,
     );
     let snapshot_sync_task = spawn_snapshot_sync(
         manager.clone(),
@@ -1851,6 +1892,9 @@ fn spawn_command_bridge(
     sim: Arc<RwLock<Simulation>>,
     snapshots_tx: broadcast::Sender<Snapshot>,
     server_handle: ServerHandle,
+    plant_transaction: Arc<AsyncMutex<()>>,
+    plant_persistence: Arc<PlantPersistence>,
+    plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -1887,12 +1931,27 @@ fn spawn_command_bridge(
                 ..request_true.clone()
             };
 
-            let snapshot = {
+            let _transaction = plant_transaction.lock().await;
+            let (response, snapshot) = {
                 let mut simulation = sim.write().await;
-                let _ = simulation.write_request(pending.source, request_true);
+                let response = simulation.write_request(pending.source, request_true.clone());
                 let _ = simulation.write_request(pending.source, request_false);
-                simulation.snapshot()
+                (response, simulation.snapshot())
             };
+
+            let plant_elapsed_sec = plant_runtime.read().await.plant_elapsed_sec;
+            if let Err(err) = plant_persistence.append_journal(
+                plant_elapsed_sec,
+                "opcua_command_processed",
+                "AIRLOCK-PEA-001",
+                serde_json::json!({
+                    "source": pending.source,
+                    "request": request_true,
+                    "response": response
+                }),
+            ) {
+                error!("Failed to journal OPC UA command: {err:#}");
+            }
 
             let _ = snapshots_tx.send(snapshot);
         }
