@@ -98,6 +98,13 @@ pub struct PlantRuntimeSnapshot {
     pub backlog_steps: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PlantSchedulerState {
+    pub accumulated_sim_sec: f64,
+    pub plant_elapsed_sec: f64,
+    pub step_index: u64,
+}
+
 impl PlantRuntimeSnapshot {
     pub fn new(config: PlantRuntimeConfig) -> Self {
         Self {
@@ -133,6 +140,24 @@ impl PlantScheduler {
             next_medium_sec: config.medium_period_sec,
             next_slow_sec: config.slow_period_sec,
         }
+    }
+
+    pub fn from_state(config: PlantRuntimeConfig, state: PlantSchedulerState) -> Result<Self> {
+        config.validate()?;
+        if !state.accumulated_sim_sec.is_finite() || state.accumulated_sim_sec < 0.0 {
+            bail!("checkpoint scheduler accumulator must be finite and non-negative");
+        }
+        if !state.plant_elapsed_sec.is_finite() || state.plant_elapsed_sec < 0.0 {
+            bail!("checkpoint plant elapsed time must be finite and non-negative");
+        }
+        Ok(Self {
+            config,
+            accumulated_sim_sec: state.accumulated_sim_sec,
+            plant_elapsed_sec: state.plant_elapsed_sec,
+            step_index: state.step_index,
+            next_medium_sec: next_boundary(state.plant_elapsed_sec, config.medium_period_sec),
+            next_slow_sec: next_boundary(state.plant_elapsed_sec, config.slow_period_sec),
+        })
     }
 
     pub fn wall_tick_duration(&self) -> std::time::Duration {
@@ -191,6 +216,18 @@ impl PlantScheduler {
                 .floor() as u64,
         }
     }
+
+    pub fn state(&self) -> PlantSchedulerState {
+        PlantSchedulerState {
+            accumulated_sim_sec: self.accumulated_sim_sec,
+            plant_elapsed_sec: self.plant_elapsed_sec,
+            step_index: self.step_index,
+        }
+    }
+}
+
+fn next_boundary(elapsed_sec: f64, period_sec: f64) -> f64 {
+    ((elapsed_sec / period_sec).floor() + 1.0) * period_sec
 }
 
 fn parse_env_f64(name: &str, default: f64) -> Result<f64> {
@@ -292,5 +329,20 @@ mod tests {
             scheduler.advance_fixed_step();
         }
         assert_eq!(scheduler.snapshot().backlog_steps, 9_900);
+    }
+
+    #[test]
+    fn restored_scheduler_continues_without_replaying_a_cadence_boundary() {
+        let mut scheduler = PlantScheduler::new(config(1.0));
+        for _ in 0..20 {
+            assert_eq!(scheduler.begin_wall_tick(), 1);
+            scheduler.advance_fixed_step();
+        }
+        let state = scheduler.state();
+        let mut restored = PlantScheduler::from_state(config(1.0), state).unwrap();
+        assert_eq!(restored.begin_wall_tick(), 1);
+        let step = restored.advance_fixed_step();
+        assert!(!step.run_medium);
+        assert_eq!(restored.snapshot().step_index, 21);
     }
 }

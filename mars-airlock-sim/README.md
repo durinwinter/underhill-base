@@ -81,11 +81,17 @@ Continuous runtime env:
 - `UNDERHILL_MEDIUM_PERIOD_SEC` (default `1.0`)
 - `UNDERHILL_SLOW_PERIOD_SEC` (default `60.0`)
 - `UNDERHILL_MAX_STEPS_PER_WALL_TICK` (default `2000`; excess work remains visible as backlog)
+- `UNDERHILL_PLANT_ID` (default `underhill-base-primary`; stable identity checked on restore)
+- `UNDERHILL_STATE_DIR` (default `backend/data/continuous`)
+- `UNDERHILL_CHECKPOINT_INTERVAL_SEC` (default `60` simulated seconds)
 
 The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
 fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
-plant elapsed time, Mars sol, time scale, step index, and catch-up backlog. Full-state persistence
-and restart restoration are the next continuous-operations milestone.
+plant elapsed time, Mars sol, time scale, step index, catch-up backlog, and persistence settings.
+The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, PEA runtime, operator,
+and scheduler state, retains the preceding checkpoint as a recovery fallback, and restores the
+same plant identity on restart. Lifecycle records are appended to `plant-events.ndjson`. Docker
+Compose mounts `backend/data`, so container replacement does not discard the represented plant.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`

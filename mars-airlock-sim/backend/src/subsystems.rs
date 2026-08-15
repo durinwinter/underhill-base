@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,7 +31,7 @@ pub struct SabatierSnapshot {
     pub alarm_reactor_temp: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EclssSimulation {
     cabin_pressure_kpa: f64,
     o2_percent: f64,
@@ -127,7 +127,7 @@ impl EclssSimulation {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SabatierSimulation {
     reactor_temp_c: f64,
     reactor_pressure_bar: f64,

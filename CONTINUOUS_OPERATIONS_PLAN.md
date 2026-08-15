@@ -109,6 +109,47 @@ Persistence is split by purpose:
 
 Restart loads the checkpoint, replays the journal after its position, validates invariants, acquires the writer lease, and then resumes advancement.
 
+### 4.3 MTP and WinCC OA integration architecture
+
+WinCC OA is treated as the Process Orchestration Layer (POL), with one independent OPC UA client connection per Process Equipment Assembly (PEA). Underhill therefore adopts the MTP/VDI-VDE-NAMUR 2658 pattern rather than exposing every subsystem through one central OPC UA gateway.
+
+The target contract is:
+
+- every PEA has a stable identity, independently addressable OPC UA endpoint, application URI, namespace URI, and application-instance certificate;
+- disconnecting or restarting one PEA does not disconnect the other PEAs from WinCC OA;
+- each PEA exposes the same generated MTP service state machine, command handshake, operation modes, alarms, diagnostics, and health structure;
+- PEA-specific process variables extend that common structure without inventing a different control model for every subsystem;
+- WinCC OA can discover endpoints and import generated metadata rather than depending on hand-maintained tag and endpoint lists;
+- OPC UA is the northbound SCADA boundary, not the fast internal physics-coupling bus.
+
+The initial monolithic runtime remains a useful kernel demonstrator, but it is a migration stage. The production topology moves toward one independently deployable process per PEA, plus plant-level services for deterministic scheduling, conserved-resource transactions, persistence coordination, discovery, historian ingestion, and authority fencing. Physics coupling between processes must preserve deterministic ordering and conservation; the IPC implementation will be selected through an architecture decision record and benchmark rather than embedded in subsystem code.
+
+```text
+WinCC OA / POL
+  |-- OPC UA client --> Airlock PEA process
+  |-- OPC UA client --> ECLSS PEA process
+  |-- OPC UA client --> Sabatier PEA process
+  |-- OPC UA client --> Power PEA process
+  `-- ... 15+ independently supervised PEA processes
+
+PEA processes <--> deterministic plant/resource coordination bus
+       |                         |
+       v                         v
+local checkpoint/journal    plant conservation ledger
+```
+
+Implementation decisions and gates:
+
+1. Define one version-controlled MTP-compatible base information model and generate standard NodeSet2 artifacts and tag manifests from it.
+2. Use MTPPy as a behavioral/reference fixture, not as the production runtime.
+3. Benchmark the actively maintained async Rust OPC UA stack against open62541 bindings for 15, 30, and 60 concurrent long-lived server instances. The gate covers NodeSet2 loading, subscriptions, reconnect behavior, certificate handling, memory, CPU, and shutdown isolation.
+4. Add an OPC UA Local Discovery Server or equivalent discovery service so adding a PEA does not require editing a hard-coded WinCC OA endpoint list.
+5. Automate issuance, trust distribution, rotation, revocation, and expiry monitoring for one certificate per PEA. Private keys never enter source control or checkpoints.
+6. Run a WinCC OA qualification harness with separate connections, subscriptions, command handshakes, certificate rejection/renewal, individual PEA restart, network interruption, and reconnect-without-value-confusion tests.
+7. Preserve stable namespace URIs and NodeIds across restart, software upgrade, and state migration. A PEA may be replaced; its identity must not silently change.
+
+The reference inputs for this work are the published MTP 2658 family, OPC Foundation NodeSet2 and discovery tooling, the MTPPy reference implementation, and NASA ECLSS reliability data. Third-party library selection remains provisional until license, maintenance status, interoperability, and soak-test results are recorded in ADRs.
+
 ## 5. Resource economy
 
 The plant carries explicit stocks and flows for:
@@ -171,6 +212,12 @@ Examples include scrubber saturation/regeneration, filter loading, catalyst deac
 
 Maintenance occurs while the plant continues operating. Redundancy, reduced capacity, deferred work, spare allocation, robotic work limits, and post-maintenance validation are part of the plant state.
 
+### 8.1 ECLSS reliability data pipeline
+
+ICES-2025-127 and its cited ISS Maintenance and Analysis Data Set (MADS) work are candidate calibration sources for OGS, CDRA, UPA, WPA, and Sabatier/CRS reliability. Before numbers enter the simulator, Underhill will preserve the source revision, population and exposure basis, component mapping, censoring assumptions, confidence bounds, and any transformation from reported MTBF/MTTR to a sampled hazard or repair-duration distribution. Published aggregate statistics must not be presented as raw MADS records, and ISS-era hardware values must remain configurable rather than being asserted as exact future Mars-base performance.
+
+The first reliability-data artifact will be a reviewed machine-readable component table plus a provenance note and tests showing that accelerated-sol fault campaigns reproduce the configured rates within statistical tolerance. Missing or weakly supported values are explicitly marked estimated, with sensitivity ranges, instead of being filled with untraceable constants.
+
 ## 9. Telemetry architecture
 
 Each canonical tag declares stable ID, owner PEA, value type, engineering unit, range, physical source, cadence, criticality, quality semantics, retention class, alarm limits, and whether it is internal truth, sensed, derived, commanded, or diagnostic.
@@ -188,6 +235,8 @@ Target scale:
 | High-detail digital twin | 8,000+ | 12,000+ |
 
 Publication cadence is tag-specific. Fast internal integration never requires broadcasting every tag at the same rate.
+
+For SCADA sizing, the catalog also records the PEA endpoint and WinCC OA subscription class. Capacity tests use at least 15 independent OPC UA sessions—not one aggregated session—and include reconnect bursts, monitored-item recreation, alarm/event load, and certificate operations. The realistic-base target of 4,600-5,300 interface tags should be tested at roughly 300-350 tags per PEA on average, while allowing survival-critical PEAs such as power and ECLSS to carry substantially more. Connection count, monitored-item count, notification rate, and historian write rate are separate budgets.
 
 ## 10. Agent and controller contract
 
@@ -244,6 +293,8 @@ Make a clean clone reproducible, remove generated artifacts from source control,
 
 Implement plant time, deterministic multi-rate scheduling, live/accelerated/fork modes, runtime observability, checkpoint state schema, journal, restore, downtime policy, and state migrations.
 
+In parallel, freeze stable PEA identities, endpoint allocation, namespace rules, and certificate boundaries so persistence does not accidentally encode the current monolithic deployment as the permanent architecture.
+
 ### Phase 2: Conserved resource kernel
 
 Implement typed resource stocks/flows, component ports, transaction ordering, reconciliation, invariants, and historian records.
@@ -251,6 +302,8 @@ Implement typed resource stocks/flows, component ports, transaction ordering, re
 ### Phase 3: Survival spine
 
 Implement Power, Thermal, Habitat/ECLSS, Water/Waste, and Safety/Structure PEAs with cross-system constraints and reference-controller behavior.
+
+Each survival-spine PEA graduates to an independently restartable OPC UA server process with the common MTP contract before the phase is complete.
 
 ### Phase 4: Continuous stressors
 
@@ -275,5 +328,8 @@ The first incremental changes are:
 5. Add atomic checkpoint writing and restart restoration.
 6. Add append-only journal ordering and replay.
 7. Move hard-coded PEAs behind a common runtime contract.
+8. Publish an ADR and benchmark harness for the Rust OPC UA stack at 15+ independent PEA endpoints.
+9. Define and generate the common MTP NodeSet2 model, stable namespace/NodeId rules, discovery registration, and per-PEA certificate lifecycle.
+10. Add WinCC OA multi-connection soak and individual-PEA restart/reconnect tests.
 
 Persistence is not considered complete until all physical, sensor, command, maintenance, scheduler, and random-generator state survives restart.

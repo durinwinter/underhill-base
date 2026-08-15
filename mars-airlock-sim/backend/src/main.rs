@@ -3,6 +3,7 @@ mod mqtt_uns;
 mod opcua;
 mod opcua_subsystems;
 mod pea_endpoint_host;
+mod persistence;
 mod plant_runtime;
 mod sim;
 mod subsystems;
@@ -48,7 +49,10 @@ use tower_http::{
 use tracing::{error, info, warn};
 use zenoh::Session;
 
-use crate::plant_runtime::{PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler};
+use crate::persistence::{PlantCheckpoint, PlantPersistence};
+use crate::plant_runtime::{
+    PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler, PlantSchedulerState,
+};
 use crate::sim::Simulation;
 use crate::subsystems::{EclssSimulation, EclssSnapshot, SabatierSimulation, SabatierSnapshot};
 
@@ -104,6 +108,7 @@ struct AppContext {
     snapshots_tx: broadcast::Sender<Snapshot>,
     systems_snapshots_tx: broadcast::Sender<SystemsSnapshot>,
     plant_runtime: Arc<RwLock<PlantRuntimeSnapshot>>,
+    plant_persistence: Arc<PlantPersistence>,
     opcua_control: opcua::OpcuaControl,
     next_client_id: Arc<AtomicU64>,
 }
@@ -116,7 +121,7 @@ pub(crate) struct PeaRuntimeState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SubsystemOperatorState {
+pub(crate) struct SubsystemOperatorState {
     operation_mode: OperationMode,
     source_mode: CommandSourceEnum,
     command_en: bool,
@@ -245,10 +250,8 @@ async fn main() -> anyhow::Result<()> {
         eclss_port, DEFAULT_ECLSS_PEA_ID, sabatier_port, DEFAULT_SABATIER_PEA_ID
     );
 
-    let sim = Arc::new(RwLock::new(Simulation::new(
-        initial_security.clone(),
-        opcua_endpoint_url.clone(),
-    )));
+    let plant_persistence = Arc::new(PlantPersistence::from_env()?);
+    let restored_checkpoint = plant_persistence.load_checkpoint()?;
     let node_id = std::env::var("MURPH_NODE_ID").unwrap_or_else(|_| DEFAULT_NODE_ID.to_string());
     let zenoh_session = match std::env::var("ZENOH_ROUTER") {
         Ok(endpoint) if !endpoint.trim().is_empty() => match open_zenoh_session().await {
@@ -268,25 +271,67 @@ async fn main() -> anyhow::Result<()> {
     };
     let mqtt_uns = mqtt_uns::MqttUnsPublisher::from_env().await.map(Arc::new);
     let initial_transition_ms = Simulation::now_ms();
-    let airlock_runtime = Arc::new(RwLock::new(PeaRuntimeState {
+    let default_runtime = PeaRuntimeState {
         deployed: true,
         running: true,
         last_transition_ms: initial_transition_ms,
-    }));
-    let eclss_runtime = Arc::new(RwLock::new(PeaRuntimeState {
-        deployed: true,
-        running: true,
-        last_transition_ms: initial_transition_ms,
-    }));
-    let sabatier_runtime = Arc::new(RwLock::new(PeaRuntimeState {
-        deployed: true,
-        running: true,
-        last_transition_ms: initial_transition_ms,
-    }));
-    let eclss_operator_state = Arc::new(RwLock::new(SubsystemOperatorState::default()));
-    let sabatier_operator_state = Arc::new(RwLock::new(SubsystemOperatorState::default()));
-    let eclss_sim = Arc::new(RwLock::new(EclssSimulation::new()));
-    let sabatier_sim = Arc::new(RwLock::new(SabatierSimulation::new()));
+    };
+    let (
+        airlock_state,
+        eclss_state,
+        sabatier_state,
+        airlock_runtime_state,
+        eclss_runtime_state,
+        sabatier_runtime_state,
+        eclss_operator_state_value,
+        sabatier_operator_state_value,
+        plant_scheduler,
+        restored,
+    ) = match restored_checkpoint {
+        Some(mut checkpoint) => {
+            checkpoint
+                .airlock
+                .prepare_after_restore(opcua_endpoint_url.clone());
+            let scheduler = PlantScheduler::from_state(plant_runtime_config, checkpoint.scheduler)?;
+            info!(
+                "Restored plant {} at simulated second {}",
+                plant_persistence.plant_id(),
+                checkpoint.scheduler.plant_elapsed_sec
+            );
+            (
+                checkpoint.airlock,
+                checkpoint.eclss,
+                checkpoint.sabatier,
+                checkpoint.airlock_runtime,
+                checkpoint.eclss_runtime,
+                checkpoint.sabatier_runtime,
+                checkpoint.eclss_operator_state,
+                checkpoint.sabatier_operator_state,
+                scheduler,
+                true,
+            )
+        }
+        None => (
+            Simulation::new(initial_security.clone(), opcua_endpoint_url.clone()),
+            EclssSimulation::new(),
+            SabatierSimulation::new(),
+            default_runtime,
+            default_runtime,
+            default_runtime,
+            SubsystemOperatorState::default(),
+            SubsystemOperatorState::default(),
+            PlantScheduler::new(plant_runtime_config),
+            false,
+        ),
+    };
+    let sim = Arc::new(RwLock::new(airlock_state));
+    let airlock_runtime = Arc::new(RwLock::new(airlock_runtime_state));
+    let eclss_runtime = Arc::new(RwLock::new(eclss_runtime_state));
+    let sabatier_runtime = Arc::new(RwLock::new(sabatier_runtime_state));
+    let eclss_operator_state = Arc::new(RwLock::new(eclss_operator_state_value));
+    let sabatier_operator_state = Arc::new(RwLock::new(sabatier_operator_state_value));
+    let eclss_sim = Arc::new(RwLock::new(eclss_state));
+    let sabatier_sim = Arc::new(RwLock::new(sabatier_state));
     let pea_opcua_endpoints = Arc::new(HashMap::from([
         (
             DEFAULT_AIRLOCK_PEA_ID.to_string(),
@@ -297,7 +342,17 @@ async fn main() -> anyhow::Result<()> {
     ]));
     let (snapshots_tx, _snapshots_rx) = broadcast::channel(256);
     let (systems_snapshots_tx, _systems_snapshots_rx) = broadcast::channel(256);
-    let plant_runtime = Arc::new(RwLock::new(PlantRuntimeSnapshot::new(plant_runtime_config)));
+    let plant_runtime = Arc::new(RwLock::new(plant_scheduler.snapshot()));
+    plant_persistence.append_journal(
+        plant_scheduler.snapshot().plant_elapsed_sec,
+        if restored {
+            "runtime_restored"
+        } else {
+            "plant_genesis"
+        },
+        plant_persistence.plant_id(),
+        json!({ "restored": restored }),
+    )?;
 
     let opcua_control =
         opcua::spawn_opcua_server(sim.clone(), snapshots_tx.clone(), opcua_runtime_config);
@@ -329,11 +384,12 @@ async fn main() -> anyhow::Result<()> {
         snapshots_tx,
         systems_snapshots_tx,
         plant_runtime,
+        plant_persistence,
         opcua_control,
         next_client_id: Arc::new(AtomicU64::new(1)),
     };
 
-    spawn_simulation_task(context.clone(), plant_runtime_config);
+    spawn_simulation_task(context.clone(), plant_scheduler);
 
     let frontend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../frontend");
     let index_file = frontend_dir.join("index.html");
@@ -448,12 +504,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_simulation_task(context: AppContext, runtime_config: PlantRuntimeConfig) {
+fn spawn_simulation_task(context: AppContext, mut scheduler: PlantScheduler) {
     tokio::spawn(async move {
-        let mut scheduler = PlantScheduler::new(runtime_config);
         let mut ticker = time::interval(scheduler.wall_tick_duration());
         let mut publish_divider: u64 = 0;
         let mut uns_divider: u64 = 0;
+        let checkpoint_interval_sec = context.plant_persistence.checkpoint_interval_sec();
+        let mut next_checkpoint_sec = next_checkpoint_boundary(
+            scheduler.snapshot().plant_elapsed_sec,
+            checkpoint_interval_sec,
+        );
 
         loop {
             ticker.tick().await;
@@ -504,6 +564,29 @@ fn spawn_simulation_task(context: AppContext, runtime_config: PlantRuntimeConfig
             }
 
             *context.plant_runtime.write().await = scheduler.snapshot();
+            if scheduler.snapshot().plant_elapsed_sec >= next_checkpoint_sec {
+                let checkpoint = capture_plant_checkpoint(&context, scheduler.state()).await;
+                match context.plant_persistence.save_checkpoint(&checkpoint) {
+                    Ok(()) => {
+                        if let Err(err) = context.plant_persistence.append_journal(
+                            checkpoint.scheduler.plant_elapsed_sec,
+                            "checkpoint_saved",
+                            context.plant_persistence.plant_id(),
+                            json!({
+                                "step_index": checkpoint.scheduler.step_index,
+                                "saved_wall_time_ms": checkpoint.saved_wall_time_ms
+                            }),
+                        ) {
+                            error!("Failed to journal checkpoint: {err:#}");
+                        }
+                    }
+                    Err(err) => error!("Failed to save plant checkpoint: {err:#}"),
+                }
+                next_checkpoint_sec = next_checkpoint_boundary(
+                    scheduler.snapshot().plant_elapsed_sec,
+                    checkpoint_interval_sec,
+                );
+            }
             let eclss_snapshot = eclss_snapshot.expect("at least one fixed step was scheduled");
             let sabatier_snapshot =
                 sabatier_snapshot.expect("at least one fixed step was scheduled");
@@ -603,12 +686,57 @@ fn spawn_simulation_task(context: AppContext, runtime_config: PlantRuntimeConfig
     });
 }
 
+fn next_checkpoint_boundary(elapsed_sec: f64, interval_sec: f64) -> f64 {
+    ((elapsed_sec / interval_sec).floor() + 1.0) * interval_sec
+}
+
+async fn capture_plant_checkpoint(
+    context: &AppContext,
+    scheduler: PlantSchedulerState,
+) -> PlantCheckpoint {
+    PlantCheckpoint::new(
+        context.plant_persistence.plant_id().to_string(),
+        scheduler,
+        context.sim.read().await.clone(),
+        context.eclss_sim.read().await.clone(),
+        context.sabatier_sim.read().await.clone(),
+        *context.airlock_runtime.read().await,
+        *context.eclss_runtime.read().await,
+        *context.sabatier_runtime.read().await,
+        context.eclss_operator_state.read().await.clone(),
+        context.sabatier_operator_state.read().await.clone(),
+    )
+}
+
+async fn journal_operation(
+    context: &AppContext,
+    kind: &'static str,
+    subject: String,
+    payload: serde_json::Value,
+) {
+    let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
+    let persistence = context.plant_persistence.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        persistence.append_journal(plant_elapsed_sec, kind, subject, payload)
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => error!("Failed to append operational journal record: {err:#}"),
+        Err(err) => error!("Operational journal task failed: {err}"),
+    }
+}
+
 async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
     let plant_runtime = *context.plant_runtime.read().await;
     axum::Json(json!({
         "status": "ok",
         "service": "underhill-base-backend",
-        "plant_runtime": plant_runtime
+        "plant_runtime": plant_runtime,
+        "persistence": {
+            "plant_id": context.plant_persistence.plant_id(),
+            "checkpoint_interval_sec": context.plant_persistence.checkpoint_interval_sec()
+        }
     }))
 }
 
@@ -821,6 +949,14 @@ async fn api_v1_deploy_pea(
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
 
+    journal_operation(
+        &context,
+        "pea_lifecycle",
+        pea_id.clone(),
+        json!({ "transition": "deployed", "last_transition_ms": transition_ms }),
+    )
+    .await;
+
     Ok(axum::Json(json!({
         "pea_id": pea_id,
         "status": "deployed",
@@ -888,6 +1024,14 @@ async fn api_v1_start_pea(
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
+
+    journal_operation(
+        &context,
+        "pea_lifecycle",
+        pea_id.clone(),
+        json!({ "transition": "started", "last_transition_ms": transition_ms }),
+    )
+    .await;
 
     Ok(axum::Json(json!({
         "pea_id": pea_id,
@@ -957,6 +1101,14 @@ async fn api_v1_stop_pea(
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
 
+    journal_operation(
+        &context,
+        "pea_lifecycle",
+        pea_id.clone(),
+        json!({ "transition": "stopped", "last_transition_ms": transition_ms }),
+    )
+    .await;
+
     Ok(axum::Json(json!({
         "pea_id": pea_id,
         "status": "stopped",
@@ -1005,6 +1157,14 @@ async fn api_v1_undeploy_pea(
     } else {
         return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
     }
+
+    journal_operation(
+        &context,
+        "pea_lifecycle",
+        pea_id.clone(),
+        json!({ "transition": "undeployed", "last_transition_ms": transition_ms }),
+    )
+    .await;
 
     Ok(axum::Json(json!({
         "pea_id": pea_id,
@@ -1220,6 +1380,19 @@ async fn api_v1_set_subsystem_operator_state(
         runtime_state,
         timestamp_ms,
         process_values,
+    )
+    .await;
+
+    journal_operation(
+        &context,
+        "operator_state_changed",
+        pea_id.clone(),
+        json!({
+            "service_tag": service_tag,
+            "operator_state": &operator_state,
+            "derived_service_state": service_state,
+            "runtime": runtime_state
+        }),
     )
     .await;
 
@@ -1916,6 +2089,13 @@ async fn api_set_security_profile(
         sim.snapshot()
     };
     let _ = context.snapshots_tx.send(snapshot.clone());
+    journal_operation(
+        &context,
+        "security_profile_changed",
+        DEFAULT_AIRLOCK_PEA_ID.to_string(),
+        json!({ "active_security_mode": snapshot.diagnostics.active_security_mode }),
+    )
+    .await;
     (
         StatusCode::OK,
         axum::Json(snapshot.diagnostics.active_security_mode),
@@ -1932,6 +2112,13 @@ async fn api_set_permissions(
         sim.snapshot()
     };
     let _ = context.snapshots_tx.send(snapshot.clone());
+    journal_operation(
+        &context,
+        "permissions_changed",
+        DEFAULT_AIRLOCK_PEA_ID.to_string(),
+        json!({ "permissions": &snapshot.permissions }),
+    )
+    .await;
     (StatusCode::OK, axum::Json(snapshot.permissions))
 }
 
@@ -1945,6 +2132,16 @@ async fn api_set_modes(
         sim.snapshot()
     };
     let _ = context.snapshots_tx.send(snapshot.clone());
+    journal_operation(
+        &context,
+        "operating_mode_changed",
+        DEFAULT_AIRLOCK_PEA_ID.to_string(),
+        json!({
+            "mtp_modes": &snapshot.mtp_modes,
+            "mtp_state_machine": &snapshot.mtp_state_machine
+        }),
+    )
+    .await;
     (
         StatusCode::OK,
         axum::Json(json!({
@@ -1964,6 +2161,13 @@ async fn api_set_leak_rate(
         sim.snapshot()
     };
     let _ = context.snapshots_tx.send(snapshot.clone());
+    journal_operation(
+        &context,
+        "fault_injected",
+        DEFAULT_AIRLOCK_PEA_ID.to_string(),
+        json!({ "alarms": &snapshot.alarms }),
+    )
+    .await;
     (StatusCode::OK, axum::Json(snapshot.alarms))
 }
 
@@ -1983,6 +2187,13 @@ async fn api_write_command(
     };
 
     let _ = context.snapshots_tx.send(snapshot);
+    journal_operation(
+        &context,
+        "command_processed",
+        DEFAULT_AIRLOCK_PEA_ID.to_string(),
+        json!({ "source": source, "response": &response }),
+    )
+    .await;
     Ok(axum::Json(response))
 }
 

@@ -26,8 +26,12 @@ services:
       UNDERHILL_MEDIUM_PERIOD_SEC: "${UNDERHILL_MEDIUM_PERIOD_SEC:-1.0}"
       UNDERHILL_SLOW_PERIOD_SEC: "${UNDERHILL_SLOW_PERIOD_SEC:-60.0}"
       UNDERHILL_MAX_STEPS_PER_WALL_TICK: "${UNDERHILL_MAX_STEPS_PER_WALL_TICK:-2000}"
+      UNDERHILL_PLANT_ID: "${UNDERHILL_PLANT_ID:-underhill-base-primary}"
+      UNDERHILL_STATE_DIR: "${UNDERHILL_STATE_DIR:-/app/backend/data/continuous}"
+      UNDERHILL_CHECKPOINT_INTERVAL_SEC: "${UNDERHILL_CHECKPOINT_INTERVAL_SEC:-60}"
       RUST_LOG: "${RUST_LOG:-info}"
     volumes:
       - "./pki:/app/backend/pki"
+      - "./backend/data:/app/backend/data"
       - "./frontend:/app/frontend"
     restart: unless-stopped

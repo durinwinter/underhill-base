@@ -1,5 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::{
     ActiveCommand, AlarmState, ClientSession, CommandChannelState, CommandEnum,
     CommandRequestFields, CommandResponseFields, CommandSourceEnum, CommandStatusEnum,
@@ -16,6 +18,7 @@ const PROC_PRESSURIZE: &str = "Proc_PressurizeForEntry";
 const PROC_MANUAL_JOG: &str = "Proc_ManualDoorJog";
 const FIXED_TIMESTEP_SEC: f64 = 0.05;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Simulation {
     sim_time_sec: f64,
     state_name: String,
@@ -70,6 +73,18 @@ impl Simulation {
         } else {
             None
         }
+    }
+
+    pub fn prepare_after_restore(&mut self, endpoint_url: String) {
+        let now = Self::now_ms();
+        self.diagnostics.endpoint_url = endpoint_url;
+        self.diagnostics.server_start_time_ms = now;
+        self.diagnostics.server_uptime_sec = 0.0;
+        self.diagnostics.connected_client_count = 0;
+        self.diagnostics.connected_client_summary = "none".to_string();
+        self.diagnostics.connected_clients.clear();
+        self.diagnostics.subscription_count = 0;
+        self.log_event("INFO", "SYSTEM", "Plant state restored from checkpoint");
     }
 
     fn security_modes_for(profile: &str) -> Vec<String> {
