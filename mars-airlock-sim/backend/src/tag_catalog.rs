@@ -5,6 +5,16 @@ use serde::Serialize;
 pub const CATALOG_SCHEMA_VERSION: u32 = 1;
 pub const FULL_BASE_TAG_COUNT: usize = 110_000;
 
+const MODEL_BACKED_TAG_IDS: &[&str] = &[
+    "underhill.v1.eclss.00000.pressure",
+    "underhill.v1.eclss.00000.oxygen",
+    "underhill.v1.eclss.00000.carbon_dioxide",
+    "underhill.v1.eclss.00000.humidity",
+    "underhill.v1.eclss.00000.alarm_active",
+    "underhill.v1.power.00000.state_of_charge",
+    "underhill.v1.power.00000.protection_state",
+];
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TagRole {
@@ -817,12 +827,18 @@ impl TagCatalog {
                 let template = family.signals[ordinal % family.signals.len()];
                 let equipment_index = ordinal / family.signals.len();
                 let publication_class = publication_class(template.publish_hz);
+                let tag_id = format!(
+                    "underhill.v1.{}.{:05}.{}",
+                    family.slug, equipment_index, template.name
+                );
+                let activation_state = if MODEL_BACKED_TAG_IDS.contains(&tag_id.as_str()) {
+                    "model_backed"
+                } else {
+                    "planned"
+                };
                 tags.push(CanonicalTag {
                     schema_version: CATALOG_SCHEMA_VERSION,
-                    tag_id: format!(
-                        "underhill.v1.{}.{:05}.{}",
-                        family.slug, equipment_index, template.name
-                    ),
+                    tag_id,
                     owner_pea: family.owner_pea.to_string(),
                     subsystem_family: family.slug.to_string(),
                     equipment_path: format!(
@@ -849,7 +865,7 @@ impl TagCatalog {
                         "Stale".to_string(),
                         "Bad".to_string(),
                     ],
-                    activation_state: "planned".to_string(),
+                    activation_state: activation_state.to_string(),
                 });
             }
         }
@@ -1001,7 +1017,8 @@ mod tests {
             catalog.stats.subsystem_counts["cross_plant_diagnostics"],
             8_000
         );
-        assert_eq!(catalog.stats.activation_state_counts["planned"], 110_000);
+        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_993);
+        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 7);
     }
 
     #[test]

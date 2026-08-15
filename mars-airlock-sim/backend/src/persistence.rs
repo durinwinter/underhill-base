@@ -198,6 +198,10 @@ impl PlantPersistence {
         self.checkpoint_interval_sec
     }
 
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
     pub fn journal_sequence(&self) -> Result<u64> {
         self.journal_sequence
             .lock()

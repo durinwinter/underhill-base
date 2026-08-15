@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod dataset_manifest;
+mod historian;
 mod model;
 mod mqtt_uns;
 mod opcua;
@@ -52,6 +53,7 @@ use tower_http::{
 use tracing::{error, info, warn};
 use zenoh::Session;
 
+use crate::historian::{Historian, NewHistorianSample, TelemetryQuality};
 use crate::persistence::{PlantCheckpoint, PlantPersistence, wall_time_ms};
 use crate::plant_runtime::{
     DowntimePolicy, PlantRuntimeConfig, PlantRuntimeSnapshot, PlantScheduler, PlantSchedulerState,
@@ -142,6 +144,7 @@ struct AppContext {
     opcua_control: opcua::OpcuaControl,
     next_client_id: Arc<AtomicU64>,
     tag_catalog: Arc<TagCatalog>,
+    historian: Arc<Historian>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -215,6 +218,13 @@ struct TelemetryCatalogPage {
     limit: usize,
     next_offset: Option<usize>,
     items: Vec<CanonicalTag>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TelemetryHistoryQuery {
+    tag_id: Option<String>,
+    since_ms: Option<u64>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -317,6 +327,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let plant_persistence = Arc::new(PlantPersistence::from_env()?);
+    let historian = Arc::new(Historian::open(plant_persistence.state_dir())?);
     let restored_checkpoint = plant_persistence.load_checkpoint()?;
     let node_id = std::env::var("MURPH_NODE_ID").unwrap_or_else(|_| DEFAULT_NODE_ID.to_string());
     let zenoh_session = match std::env::var("ZENOH_ROUTER") {
@@ -533,6 +544,7 @@ async fn main() -> anyhow::Result<()> {
         opcua_control,
         next_client_id: Arc::new(AtomicU64::new(1)),
         tag_catalog,
+        historian,
     };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -547,6 +559,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/power/snapshot", get(api_power_snapshot))
         .route("/api/v1/telemetry/catalog", get(api_telemetry_catalog))
         .route("/api/v1/telemetry/stats", get(api_telemetry_stats))
+        .route("/api/v1/telemetry/history", get(api_telemetry_history))
         .route("/api/events", get(api_events))
         .route("/api/mtp/tree", get(api_mtp_tree))
         .route("/api/v1/pea", get(api_v1_list_peas))
@@ -739,6 +752,7 @@ fn spawn_simulation_task(
             let mut eclss_snapshot = None;
             let mut sabatier_snapshot = None;
             let mut power_snapshot = None;
+            let mut historian_frames = Vec::new();
             for _ in 0..steps_due {
                 let _transaction = context.plant_transaction.lock().await;
                 let scheduled = scheduler.advance_fixed_step();
@@ -783,6 +797,13 @@ fn spawn_simulation_task(
                         airlock_load_kw,
                     )
                 };
+                if scheduled.run_medium {
+                    historian_frames.push((
+                        scheduler.snapshot().plant_elapsed_sec,
+                        latest_eclss.clone(),
+                        latest_power.clone(),
+                    ));
+                }
                 eclss_snapshot = Some(latest_eclss);
                 sabatier_snapshot = Some(latest_sabatier);
                 power_snapshot = Some(latest_power);
@@ -808,6 +829,11 @@ fn spawn_simulation_task(
             let sabatier_snapshot =
                 sabatier_snapshot.expect("at least one fixed step was scheduled");
             let power_snapshot = power_snapshot.expect("at least one fixed step was scheduled");
+            if !historian_frames.is_empty()
+                && let Err(err) = persist_core_historian_frames(&context, historian_frames).await
+            {
+                error!("Failed to append historian samples: {err:#}");
+            }
             let maybe_airlock_snapshot = if publish_divider.is_multiple_of(2) {
                 let sim = context.sim.read().await;
                 Some(sim.snapshot())
@@ -921,6 +947,99 @@ fn spawn_simulation_task(
             }
         }
     })
+}
+
+async fn persist_core_historian_frames(
+    context: &AppContext,
+    frames: Vec<(f64, EclssSnapshot, PowerSnapshot)>,
+) -> anyhow::Result<()> {
+    let frames = frames
+        .into_iter()
+        .map(|(plant_elapsed_sec, eclss, power)| {
+            (
+                plant_elapsed_sec,
+                build_core_historian_samples(&eclss, &power),
+            )
+        })
+        .collect();
+    let historian = context.historian.clone();
+    tokio::task::spawn_blocking(move || historian.append_frames(wall_time_ms(), frames))
+        .await
+        .map_err(|error| anyhow::anyhow!("historian task failed: {error}"))??;
+    Ok(())
+}
+
+fn build_core_historian_samples(
+    eclss: &EclssSnapshot,
+    power: &PowerSnapshot,
+) -> Vec<NewHistorianSample> {
+    let eclss_quality = if eclss.alarm_high_co2 || eclss.alarm_low_o2 {
+        TelemetryQuality::Uncertain
+    } else if power.alarm_bus_undervoltage {
+        TelemetryQuality::Bad
+    } else {
+        TelemetryQuality::Good
+    };
+    let power_quality = if power.alarm_bus_undervoltage {
+        TelemetryQuality::Bad
+    } else if power.alarm_battery_low || power.load_shed_active {
+        TelemetryQuality::Uncertain
+    } else {
+        TelemetryQuality::Good
+    };
+    let source = "continuous_model_v1".to_string();
+    vec![
+        NewHistorianSample {
+            tag_id: "underhill.v1.eclss.00000.pressure".to_string(),
+            value: json!(eclss.cabin_pressure_kpa),
+            quality: eclss_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.eclss.00000.oxygen".to_string(),
+            value: json!(eclss.o2_percent),
+            quality: eclss_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.eclss.00000.carbon_dioxide".to_string(),
+            value: json!(eclss.co2_ppm),
+            quality: eclss_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.eclss.00000.humidity".to_string(),
+            value: json!(eclss.humidity_pct),
+            quality: eclss_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.eclss.00000.alarm_active".to_string(),
+            value: json!(eclss.alarm_high_co2 || eclss.alarm_low_o2),
+            quality: eclss_quality,
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.power.00000.state_of_charge".to_string(),
+            value: json!(power.battery_soc_pct),
+            quality: power_quality.clone(),
+            source: source.clone(),
+        },
+        NewHistorianSample {
+            tag_id: "underhill.v1.power.00000.protection_state".to_string(),
+            value: json!(if power.alarm_bus_undervoltage {
+                "bus_undervoltage"
+            } else if power.load_shed_active {
+                "load_shed"
+            } else if power.alarm_battery_low {
+                "battery_low"
+            } else {
+                "normal"
+            }),
+            quality: power_quality,
+            source,
+        },
+    ]
 }
 
 fn next_checkpoint_boundary(elapsed_sec: f64, interval_sec: f64) -> f64 {
@@ -1041,12 +1160,29 @@ async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
             "checkpoint_interval_sec": context.plant_persistence.checkpoint_interval_sec(),
             "journal_sequence": journal_sequence
         },
-        "telemetry_catalog": context.tag_catalog.stats()
+        "telemetry_catalog": context.tag_catalog.stats(),
+        "historian": context.historian.stats()
     }))
 }
 
 async fn api_telemetry_stats(State(context): State<AppContext>) -> impl IntoResponse {
     axum::Json(context.tag_catalog.stats().clone())
+}
+
+async fn api_telemetry_history(
+    Query(query): Query<TelemetryHistoryQuery>,
+    State(context): State<AppContext>,
+) -> impl IntoResponse {
+    let items = context.historian.query(
+        query.tag_id.as_deref(),
+        query.since_ms,
+        query.limit.unwrap_or(500),
+    );
+    axum::Json(json!({
+        "stats": context.historian.stats(),
+        "count": items.len(),
+        "items": items
+    }))
 }
 
 async fn api_telemetry_catalog(

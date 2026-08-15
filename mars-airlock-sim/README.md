@@ -123,8 +123,16 @@ tags across 13 subsystem families; `GET /api/v1/telemetry/catalog` provides filt
 equipment path, semantic role, value type, engineering unit, range, internal/sensing/publication
 cadences, deadband, criticality, quality states, retention class, and OPC UA subscription class.
 The catalog is a discoverable contract and capacity budget—not a claim that every catalog tag is
-already backed by implemented physics. Physics-backed activation is tracked separately as PEAs
+already backed by implemented dynamics. Activation maturity is tracked separately as PEAs
 graduate from planned definitions to sensed values.
+
+Seven initial ECLSS and Power definitions are explicitly marked `model_backed` and written at each
+simulated one-second boundary to `telemetry-history.ndjson`. Historian records contain monotonic
+durable sequence, stable tag ID, wall timestamp, continuous plant time, typed value, quality, and
+source-model identity. Startup recovers the bounded recent query window and continues the durable
+sequence; accelerated operation preserves every crossed simulated cadence boundary in batched
+writes. `UNDERHILL_HISTORIAN_RECENT_CAPACITY` controls the in-memory query window (default 50,000)
+without truncating the durable archive.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`
@@ -213,6 +221,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /api/v1/power/snapshot`
 - `GET /api/v1/telemetry/stats`
 - `GET /api/v1/telemetry/catalog?subsystem_family=power&publication_class=fast&offset=0&limit=250`
+- `GET /api/v1/telemetry/history?tag_id=underhill.v1.power.00000.state_of_charge&limit=500`
 - `GET /api/events`
 - `GET /api/mtp/tree`
 - `GET /api/v1/pea`
