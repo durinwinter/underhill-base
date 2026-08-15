@@ -86,6 +86,12 @@ struct EclssNodes {
     power_kw: NodeId,
     alarm_high_co2: NodeId,
     alarm_low_o2: NodeId,
+    reliability_profile: NodeId,
+    failed_components: NodeId,
+    degraded_components: NodeId,
+    repairing_components: NodeId,
+    spares_remaining: NodeId,
+    maintenance_required: NodeId,
 }
 
 #[derive(Clone)]
@@ -419,6 +425,36 @@ async fn run_eclss_opcua_server(
                         &nodes.alarm_low_o2,
                         None,
                         DataValue::new_now(snapshot.alarm_low_o2),
+                    ),
+                    (
+                        &nodes.reliability_profile,
+                        None,
+                        DataValue::new_now(snapshot.reliability.profile_id.clone()),
+                    ),
+                    (
+                        &nodes.failed_components,
+                        None,
+                        DataValue::new_now(snapshot.reliability.failed_count as i32),
+                    ),
+                    (
+                        &nodes.degraded_components,
+                        None,
+                        DataValue::new_now(snapshot.reliability.degraded_count as i32),
+                    ),
+                    (
+                        &nodes.repairing_components,
+                        None,
+                        DataValue::new_now(snapshot.reliability.repairing_count as i32),
+                    ),
+                    (
+                        &nodes.spares_remaining,
+                        None,
+                        DataValue::new_now(snapshot.reliability.spares_remaining as i32),
+                    ),
+                    (
+                        &nodes.maintenance_required,
+                        None,
+                        DataValue::new_now(snapshot.alarm_maintenance_required),
                     ),
                 ]
                 .into_iter(),
@@ -1162,6 +1198,7 @@ fn build_eclss_address_space(
     );
     let data = NodeId::new(ns, "Underhill.ECLSSPEA.DataAssemblies");
     let indicators = NodeId::new(ns, "Underhill.ECLSSPEA.DataAssemblies.Indicators");
+    let reliability = NodeId::new(ns, "Underhill.ECLSSPEA.DataAssemblies.Reliability");
 
     let mut address_space = manager.address_space().write();
     address_space.add_folder(
@@ -1179,6 +1216,7 @@ fn build_eclss_address_space(
         (&service_control, "ServiceControl", &service),
         (&data, "DataAssemblies", &pea),
         (&indicators, "Indicators", &data),
+        (&reliability, "Reliability", &data),
     ] {
         address_space.add_folder(node, browse, browse, parent);
     }
@@ -1215,6 +1253,30 @@ fn build_eclss_address_space(
     let alarm_low_o2 = NodeId::new(
         ns,
         "Underhill.ECLSSPEA.DataAssemblies.Indicators.AlarmLowO2",
+    );
+    let reliability_profile = NodeId::new(
+        ns,
+        "Underhill.ECLSSPEA.DataAssemblies.Reliability.ProfileId",
+    );
+    let failed_components = NodeId::new(
+        ns,
+        "Underhill.ECLSSPEA.DataAssemblies.Reliability.FailedComponents",
+    );
+    let degraded_components = NodeId::new(
+        ns,
+        "Underhill.ECLSSPEA.DataAssemblies.Reliability.DegradedComponents",
+    );
+    let repairing_components = NodeId::new(
+        ns,
+        "Underhill.ECLSSPEA.DataAssemblies.Reliability.RepairingComponents",
+    );
+    let spares_remaining = NodeId::new(
+        ns,
+        "Underhill.ECLSSPEA.DataAssemblies.Reliability.SparesRemaining",
+    );
+    let maintenance_required = NodeId::new(
+        ns,
+        "Underhill.ECLSSPEA.DataAssemblies.Reliability.MaintenanceRequired",
     );
 
     insert_var(
@@ -1263,6 +1325,54 @@ fn build_eclss_address_space(
         &o2_percent,
         "O2Percent",
         0.0f64,
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &reliability,
+        &reliability_profile,
+        "ProfileId",
+        "",
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &reliability,
+        &failed_components,
+        "FailedComponents",
+        0i32,
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &reliability,
+        &degraded_components,
+        "DegradedComponents",
+        0i32,
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &reliability,
+        &repairing_components,
+        "RepairingComponents",
+        0i32,
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &reliability,
+        &spares_remaining,
+        "SparesRemaining",
+        0i32,
+        false,
+    );
+    insert_var(
+        &mut address_space,
+        &reliability,
+        &maintenance_required,
+        "MaintenanceRequired",
+        false,
         false,
     );
     insert_var(
@@ -1327,6 +1437,12 @@ fn build_eclss_address_space(
         power_kw,
         alarm_high_co2,
         alarm_low_o2,
+        reliability_profile,
+        failed_components,
+        degraded_components,
+        repairing_components,
+        spares_remaining,
+        maintenance_required,
     }
 }
 

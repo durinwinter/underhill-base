@@ -118,7 +118,14 @@ power-dependent treatment, evolving water-quality indicators, alarms, persistenc
 REST/UNS/OPC UA surfaces. This creates the native process on which SWaT/WADI/BATADAL-inspired
 campaigns can be translated. The campaign runner now applies a native compound hazard and scores
 agent observations, but no external attack trace has yet been imported or replayed.
-Similarly, ECLSS reliability sources are cataloged but have not yet been converted into sampled
-failure/repair distributions; the present ECLSS dynamics should not be described as MADS-calibrated.
+The public NASA ICES-2025-127 paper and file checksum are now verified. Four representative ORU
+rows from its published Tables 2, 8, 9, and 10 drive a deterministic, checkpointed constant-failure-
+rate model for oxygen generation, carbon-dioxide removal, humidity control, and water recovery.
+Failures reduce physical capacity; degraded equipment supplies partial capacity; repairs consume
+finite spares and use published reference MTTR. The API, UNS, OPC UA summary, historian alarm, and
+journal expose observed state while keeping exact future failure draws private. This is a preliminary
+MADS-derived aggregate profile, not raw MADS, a complete ECLSS reliability block diagram, or exact
+Mars-qualified hardware performance. Duty cycle, installed quantity, and spare inventory remain
+separately labeled Underhill assumptions.
 
 The initial Power PEA now provides a conservation-checked islanded DC microgrid with Mars-sol solar forcing, fission generation, battery charge/discharge constraints and efficiency, coupled subsystem demand, load shedding, cumulative energy accounting, durable restart state, REST/UNS telemetry, and an independent OPC UA endpoint. It is not yet calibrated to a battery aging dataset: pack topology, temperature, resistance growth, capacity fade, cycle damage, and chemistry-specific limits remain explicit follow-on work.

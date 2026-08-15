@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "dataset_id": "ices-2025-127-eclss-reliability",
+  "canonical_name": "ICES-2025-127 Published ECLSS Reliability Tables",
+  "provenance_status": "source_verified",
+  "source": {
+    "publisher": "NASA Technical Reports Server",
+    "landing_page": "https://ntrs.nasa.gov/citations/20250003955",
+    "retrieved_at": "2026-08-14",
+    "checksum_sha256": "866c920b44d322655ee01c22b549c416a88e8c10ca096f0089e66b1e4693ece2"
+  },
+  "license": {
+    "status": "public_use_permitted",
+    "identifier": "NASA-NTRS-public-use",
+    "notes": "The NTRS record marks the conference paper Public Use Permitted. This manifest records extracted aggregate parameters only; it does not redistribute or claim access to raw MADS records."
+  },
+  "underhill": {
+    "roles": ["reliability_parameter_reference", "maintenance_duration_reference", "sparing_campaign_design"],
+    "target_peas": ["ECLSS-PEA-001", "WATER-PEA-001", "SAFETY-PEA-001"],
+    "signals": [
+      {"source_signal": "ORU MTBF", "underhill_tag": "Components/{component}/Reliability/MtbfHours", "transform": "preserve_published_aggregate_and_evidence_class"},
+      {"source_signal": "ORU MTTR", "underhill_tag": "Components/{component}/Maintenance/ReferenceRepairHours", "transform": "preserve_reference_duration_without_unreported_logistics_delay"},
+      {"source_signal": "operational K-factor", "underhill_tag": "Components/{component}/Reliability/KFactor", "transform": "preserve_dimensionless_published_value"},
+      {"source_signal": "limited or throughput life", "underhill_tag": "Components/{component}/Reliability/LifeLimit", "transform": "map_only_when_the_source_row_exposes_a_limit"}
+    ],
+    "domain_gaps": [
+      "the paper publishes MADS-derived aggregates rather than raw event and exposure records",
+      "ISS hardware, gravity, logistics, accessibility, duty cycles, and maintenance staffing differ from a Mars base",
+      "the preliminary database is explicitly incomplete and representative rows do not form a complete reliability block diagram",
+      "reported repair durations exclude some gathering, stowing, troubleshooting, scheduling, and access delays"
+    ]
+  },
+  "partitions": [
+    {"name": "profile_development", "purpose": "construct provenance-labeled representative ORU profiles", "selector": "source tables 2, 8, 9, and 10 with explicit row identity"},
+    {"name": "sensitivity_validation", "purpose": "test uncertainty and alternate Mars duty-cycle assumptions without refitting source values", "selector": "scenario seeds with stable_hash(seed) modulo 5 in [3,4]"}
+  ],
+  "acceptance_metrics": [
+    {"name": "sampled_mean_failure_exposure_error", "direction": "max", "threshold": 0.03, "unit": "relative_error"},
+    {"name": "checkpoint_trajectory_divergence", "direction": "max", "threshold": 0.0, "unit": "state_mismatches"},
+    {"name": "unlabeled_estimated_parameters", "direction": "max", "threshold": 0.0, "unit": "count"}
+  ],
+  "prohibited_claims": [
+    "published tables are the raw ISS Maintenance and Analysis Data Set",
+    "representative ORU rows are a complete ECLSS reliability model",
+    "ISS rates are exact future Mars-base failure probabilities",
+    "reference MTTR values include all operational delay and logistics time"
+  ]
+}

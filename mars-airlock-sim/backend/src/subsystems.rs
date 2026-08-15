@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::eclss_reliability::{EclssReliabilitySnapshot, EclssReliabilityState, ReliabilityEvent};
+
 const MARS_SOL_SEC: f64 = 88_775.244;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EclssSnapshot {
     pub timestamp_ms: u64,
+    pub sim_time_sec: f64,
     pub cabin_pressure_kpa: f64,
     pub o2_percent: f64,
     pub co2_ppm: f64,
@@ -16,6 +19,8 @@ pub struct EclssSnapshot {
     pub power_kw: f64,
     pub alarm_high_co2: bool,
     pub alarm_low_o2: bool,
+    pub alarm_maintenance_required: bool,
+    pub reliability: EclssReliabilitySnapshot,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1031,6 +1036,8 @@ impl SafetySimulation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EclssSimulation {
+    #[serde(default)]
+    sim_time_sec: f64,
     cabin_pressure_kpa: f64,
     o2_percent: f64,
     co2_ppm: f64,
@@ -1039,11 +1046,14 @@ pub struct EclssSimulation {
     co2_capture_kgph: f64,
     o2_generation_kgph: f64,
     power_kw: f64,
+    #[serde(default)]
+    reliability: EclssReliabilityState,
 }
 
 impl EclssSimulation {
     pub fn new() -> Self {
         Self {
+            sim_time_sec: 0.0,
             cabin_pressure_kpa: 101.3,
             o2_percent: 21.0,
             co2_ppm: 950.0,
@@ -1052,16 +1062,23 @@ impl EclssSimulation {
             co2_capture_kgph: 0.7,
             o2_generation_kgph: 0.8,
             power_kw: 11.0,
+            reliability: EclssReliabilityState::default(),
         }
     }
 
     pub fn step(&mut self, dt_sec: f64, running: bool) -> EclssSnapshot {
+        if dt_sec > 0.0 {
+            self.sim_time_sec += dt_sec;
+        }
+        let capacity = self.reliability.step(dt_sec, running);
         if running {
-            let co2_target_capture = ((self.co2_ppm - 700.0) / 500.0).clamp(0.25, 1.8);
+            let co2_target_capture =
+                ((self.co2_ppm - 700.0) / 500.0).clamp(0.25, 1.8) * capacity.carbon_dioxide_removal;
             self.co2_capture_kgph =
                 first_order(self.co2_capture_kgph, co2_target_capture, 0.35, dt_sec);
 
-            let o2_target_gen = ((21.1 - self.o2_percent) * 0.9 + 0.7).clamp(0.5, 1.6);
+            let o2_target_gen =
+                ((21.1 - self.o2_percent) * 0.9 + 0.7).clamp(0.5, 1.6) * capacity.oxygen_generation;
             self.o2_generation_kgph =
                 first_order(self.o2_generation_kgph, o2_target_gen, 0.25, dt_sec);
 
@@ -1072,8 +1089,16 @@ impl EclssSimulation {
             self.o2_percent += dt_sec * (self.o2_generation_kgph * 0.015 - 0.004);
             self.o2_percent = self.o2_percent.clamp(18.0, 24.0);
 
-            self.humidity_pct = first_order(self.humidity_pct, 47.0, 0.12, dt_sec);
-            self.water_recovery_pct = first_order(self.water_recovery_pct, 88.0, 0.08, dt_sec);
+            let humidity_target = 47.0 + (1.0 - capacity.humidity_control) * 18.0;
+            self.humidity_pct = first_order(
+                self.humidity_pct,
+                humidity_target,
+                0.12 * capacity.humidity_control.max(0.02),
+                dt_sec,
+            );
+            let recovery_target = 20.0 + 68.0 * capacity.water_recovery;
+            self.water_recovery_pct =
+                first_order(self.water_recovery_pct, recovery_target, 0.08, dt_sec);
             self.power_kw = first_order(
                 self.power_kw,
                 8.5 + self.co2_capture_kgph * 2.8 + self.o2_generation_kgph * 2.4,
@@ -1095,8 +1120,10 @@ impl EclssSimulation {
     }
 
     pub fn snapshot(&self) -> EclssSnapshot {
+        let reliability = self.reliability.snapshot();
         EclssSnapshot {
             timestamp_ms: now_ms(),
+            sim_time_sec: self.sim_time_sec,
             cabin_pressure_kpa: self.cabin_pressure_kpa,
             o2_percent: self.o2_percent,
             co2_ppm: self.co2_ppm,
@@ -1107,7 +1134,38 @@ impl EclssSimulation {
             power_kw: self.power_kw,
             alarm_high_co2: self.co2_ppm > 2500.0,
             alarm_low_o2: self.o2_percent < 19.3,
+            alarm_maintenance_required: reliability.maintenance_backlog > 0,
+            reliability,
         }
+    }
+
+    pub fn inject_component_failure(&mut self, component_id: &str) -> Result<(), String> {
+        self.reliability.inject_failure(component_id)
+    }
+
+    pub fn inject_component_degradation(
+        &mut self,
+        component_id: &str,
+        health_pct: f64,
+    ) -> Result<(), String> {
+        self.reliability
+            .inject_degradation(component_id, health_pct)
+    }
+
+    pub fn start_component_repair(&mut self, component_id: &str) -> Result<String, String> {
+        self.reliability.start_repair(component_id)
+    }
+
+    pub fn add_component_spares(
+        &mut self,
+        component_id: &str,
+        quantity: u32,
+    ) -> Result<(), String> {
+        self.reliability.add_spares(component_id, quantity)
+    }
+
+    pub fn drain_reliability_events(&mut self) -> Vec<ReliabilityEvent> {
+        self.reliability.drain_events()
     }
 
     pub fn mtp_nodes(&self) -> Vec<String> {
@@ -1117,6 +1175,8 @@ impl EclssSimulation {
             "ServiceSet/EclssService/StateMachine".to_string(),
             "ServiceSet/EclssService/DataAssemblies/Indicators".to_string(),
             "ServiceSet/EclssService/DataAssemblies/Parameters".to_string(),
+            "ServiceSet/EclssService/DataAssemblies/Reliability".to_string(),
+            "ServiceSet/EclssService/DataAssemblies/Maintenance".to_string(),
             "ServiceSet/EclssService/DataAssemblies/Control/OperatorCommands/Req".to_string(),
             "ServiceSet/EclssService/DataAssemblies/Control/OperatorCommands/Rsp".to_string(),
             "ServiceSet/EclssService/DataAssemblies/Control/RemoteCommands/Req".to_string(),
@@ -1280,6 +1340,60 @@ mod tests {
         assert_eq!(snapshot.unmet_load_kw, snapshot.critical_load_kw);
         assert_eq!(snapshot.bus_voltage_v, 0.0);
         assert!(snapshot.alarm_bus_undervoltage);
+    }
+
+    #[test]
+    fn eclss_oru_failure_reduces_physical_capacity_and_repair_restores_it() {
+        let mut eclss = EclssSimulation::new();
+        eclss
+            .inject_component_failure("oga_water_assembly_oru")
+            .unwrap();
+        let failed = eclss.step(300.0, true);
+        assert!(failed.o2_generation_kgph < 0.01);
+        assert!(failed.alarm_maintenance_required);
+        assert_eq!(failed.reliability.failed_count, 1);
+
+        eclss
+            .start_component_repair("oga_water_assembly_oru")
+            .unwrap();
+        let repaired = eclss.step(4.2 * 3_600.0, true);
+        assert_eq!(repaired.reliability.failed_count, 0);
+        assert_eq!(repaired.reliability.repairing_count, 0);
+        assert!(repaired.o2_generation_kgph > 0.0);
+        assert_eq!(repaired.reliability.spares_remaining, 7);
+    }
+
+    #[test]
+    fn degraded_cdra_produces_partial_not_binary_capacity() {
+        let mut eclss = EclssSimulation::new();
+        eclss
+            .inject_component_degradation("cdra_desiccant_adsorbent_assembly", 25.0)
+            .unwrap();
+        let snapshot = eclss.step(10.0, true);
+        let cdra = snapshot
+            .reliability
+            .components
+            .iter()
+            .find(|component| component.component_id == "cdra_desiccant_adsorbent_assembly")
+            .unwrap();
+        assert_eq!(cdra.capacity_fraction, 0.25);
+        assert_eq!(snapshot.reliability.degraded_count, 1);
+        assert!(snapshot.co2_capture_kgph > 0.0);
+        assert!(snapshot.co2_capture_kgph < 0.7);
+    }
+
+    #[test]
+    fn legacy_eclss_checkpoint_gains_a_valid_default_reliability_profile() {
+        let mut value = serde_json::to_value(EclssSimulation::new()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("reliability");
+        object.remove("sim_time_sec");
+
+        let restored: EclssSimulation = serde_json::from_value(value).unwrap();
+        let snapshot = restored.snapshot();
+        assert_eq!(snapshot.sim_time_sec, 0.0);
+        assert_eq!(snapshot.reliability.components.len(), 4);
+        assert_eq!(snapshot.reliability.spares_remaining, 8);
     }
 
     #[test]

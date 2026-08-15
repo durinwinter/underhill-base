@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "profile_id": "eclss-ices-2025-127-representative-orus-v1",
+  "source": {
+    "document_id": "20250003955",
+    "report_number": "ICES-2025-127",
+    "title": "Advancing ECLSS Reliability Modeling: Integrating ISS Data for Sustainable Long-Duration Mission Planning",
+    "publisher": "NASA Technical Reports Server",
+    "landing_page": "https://ntrs.nasa.gov/citations/20250003955",
+    "retrieved_at": "2026-08-14",
+    "sha256": "866c920b44d322655ee01c22b549c416a88e8c10ca096f0089e66b1e4693ece2",
+    "evidence_class": "published_mads_derived_aggregate"
+  },
+  "model": {
+    "failure_distribution": "exponential_constant_failure_rate",
+    "annual_failure_rate_formula": "duty_cycle * quantity_installed * k_factor * 8760 / mtbf_hours",
+    "repair_distribution": "deterministic_reference_duration",
+    "notes": "The paper identifies MADS as its primary source and states the database is incomplete. These rows are published aggregates for representative ISS ORUs, not raw MADS records and not Mars-qualified hardware predictions."
+  },
+  "components": [
+    {
+      "component_id": "oga_water_assembly_oru",
+      "display_name": "OGA Water Assembly ORU",
+      "function": "oxygen_generation",
+      "source_table": "Table 10",
+      "source_row": "Water Assembly ORU",
+      "mtbf_hours": 37885.0,
+      "mttr_hours": 4.19,
+      "k_factor": 1.07,
+      "duty_cycle": 1.0,
+      "duty_cycle_basis": "underhill_continuous_service_assumption_v1",
+      "quantity_installed": 1,
+      "quantity_installed_basis": "underhill_representative_single_string_assumption_v1",
+      "initial_spares": 2,
+      "initial_spares_basis": "underhill_validation_inventory_assumption_v1"
+    },
+    {
+      "component_id": "cdra_desiccant_adsorbent_assembly",
+      "display_name": "CDRA Desiccant/Adsorbent Assembly",
+      "function": "carbon_dioxide_removal",
+      "source_table": "Table 8",
+      "source_row": "Desiccant/Adsorbent Assy",
+      "mtbf_hours": 77100.0,
+      "mttr_hours": 17.7,
+      "k_factor": 1.19,
+      "duty_cycle": 1.0,
+      "duty_cycle_basis": "underhill_continuous_service_assumption_v1",
+      "quantity_installed": 1,
+      "quantity_installed_basis": "underhill_representative_single_string_assumption_v1",
+      "initial_spares": 2,
+      "initial_spares_basis": "underhill_validation_inventory_assumption_v1"
+    },
+    {
+      "component_id": "ccaa_water_separator_oru",
+      "display_name": "CCAA Water Separator ORU",
+      "function": "humidity_control",
+      "source_table": "Table 9",
+      "source_row": "Separator Water, ORU",
+      "mtbf_hours": 130800.0,
+      "mttr_hours": 3.3,
+      "k_factor": 1.57,
+      "duty_cycle": 1.0,
+      "duty_cycle_basis": "underhill_continuous_service_assumption_v1",
+      "quantity_installed": 1,
+      "quantity_installed_basis": "underhill_representative_single_string_assumption_v1",
+      "initial_spares": 2,
+      "initial_spares_basis": "underhill_validation_inventory_assumption_v1"
+    },
+    {
+      "component_id": "wpa_pump_separator",
+      "display_name": "WPA Pump/Separator",
+      "function": "water_recovery",
+      "source_table": "Table 2",
+      "source_row": "Pump/Separator",
+      "mtbf_hours": 39429.0,
+      "mttr_hours": 1.15,
+      "k_factor": 3.26,
+      "duty_cycle": 1.0,
+      "duty_cycle_basis": "underhill_continuous_service_assumption_v1",
+      "quantity_installed": 1,
+      "quantity_installed_basis": "underhill_representative_single_string_assumption_v1",
+      "initial_spares": 2,
+      "initial_spares_basis": "underhill_validation_inventory_assumption_v1"
+    }
+  ],
+  "prohibited_claims": [
+    "this file contains raw ISS MADS records",
+    "the representative ORUs form a complete ECLSS reliability block diagram",
+    "ISS-derived rates predict Mars-qualified hardware without uncertainty or redesign",
+    "reference repair durations include troubleshooting, gathering, stowing, or crew scheduling delays"
+  ]
+}

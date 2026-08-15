@@ -37,6 +37,7 @@ Standalone Underhill Base simulator with:
 - Permissions toggles (`operator_control_enabled`, `remote_control_enabled`)
 - Fault injection (`leak_rate_nominal`, valve stiction/bias/rate/stuck/leakage)
 - Checkpointed plant-time validation campaigns with bounded fault ownership, agent observations, and scored reports
+- Seeded, checkpointed ECLSS ORU reliability with physical capacity loss, partial degradation, finite spares, and continuous repair work orders
 - Diagnostics and connected session reporting
 - ECLSS/Sabatier writeback lifecycle: `PENDING`, `APPLIED`, `SETTLING`, `COMPLETE`, `REJECTED`, `TIMED_OUT`
 
@@ -118,6 +119,16 @@ Airlock valve commands no longer change physical position instantaneously. The e
 vent valves model rate-limited lag, deadband, stiction, hard-stuck faults, leakage, and sensor bias.
 HTTP snapshots and OPC UA expose commanded, true, and sensed position, command/sensor residual,
 and stiction state so controllers and diagnostic agents can be evaluated against non-ideal loops.
+
+ECLSS reliability uses four representative ORUs from the public ICES-2025-127 tables. Published
+MTBF, MTTR, and K-factor fields remain distinguishable from Underhill duty-cycle, installed-quantity,
+and initial-spare assumptions. Seeded constant-failure-rate events, component exposure, failures,
+degradation, active work orders, repair progress, failure counts, and spare consumption survive
+restart. A bounded `add_spares` action represents deliveries across the not-yet-modeled logistics
+boundary, allowing indefinite component cycles without inventing inventory. Exact sampled future
+failure times remain private. REST and UNS expose component detail;
+the independent ECLSS OPC UA endpoint exposes reliability profile and summary counts. This initial
+profile is MADS-derived aggregate evidence, not raw MADS or a complete Mars ECLSS reliability model.
 
 The Power PEA continuously couples actual Airlock, ECLSS, and Sabatier demand to deterministic
 Mars-sol solar input, steady fission generation, battery charge/discharge limits and efficiencies,
@@ -262,6 +273,8 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /api/v1/water/snapshot`
 - `GET /api/v1/safety/snapshot`
 - `POST /api/v1/safety/hazards`
+- `GET /api/v1/eclss/reliability`
+- `POST /api/v1/eclss/components/{component_id}/maintenance`
 - `GET|POST /api/v1/validation/campaigns`
 - `GET /api/v1/validation/campaigns/{campaign_id}`
 - `POST /api/v1/validation/campaigns/{campaign_id}/observations`

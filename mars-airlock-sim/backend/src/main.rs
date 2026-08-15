@@ -1,6 +1,7 @@
 mod campaign;
 #[cfg(test)]
 mod dataset_manifest;
+mod eclss_reliability;
 mod historian;
 mod model;
 mod mqtt_uns;
@@ -255,6 +256,22 @@ struct SafetyHazardUpdateRequest {
     injected_leak_kg_s: Option<f64>,
     fire_source_kw: Option<f64>,
     habitat_isolated: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EclssMaintenanceAction {
+    InjectFailure,
+    InjectDegradation,
+    StartRepair,
+    AddSpares,
+}
+
+#[derive(Debug, Deserialize)]
+struct EclssMaintenanceRequest {
+    action: EclssMaintenanceAction,
+    health_pct: Option<f64>,
+    quantity: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -710,6 +727,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/water/snapshot", get(api_water_snapshot))
         .route("/api/v1/safety/snapshot", get(api_safety_snapshot))
         .route("/api/v1/safety/hazards", post(api_set_safety_hazards))
+        .route("/api/v1/eclss/reliability", get(api_eclss_reliability))
+        .route(
+            "/api/v1/eclss/components/{component_id}/maintenance",
+            post(api_eclss_component_maintenance),
+        )
         .route(
             "/api/v1/validation/campaigns",
             get(api_list_campaigns).post(api_create_campaign),
@@ -947,13 +969,24 @@ fn spawn_simulation_task(
                     sim.snapshot()
                 };
 
-                let latest_eclss = {
+                let (latest_eclss, reliability_events) = {
                     let mut sim = context.eclss_sim.write().await;
-                    sim.step(
+                    let snapshot = sim.step(
                         scheduled.fixed_step_sec,
                         eclss_running && critical_power_available,
-                    )
+                    );
+                    (snapshot, sim.drain_reliability_events())
                 };
+                for event in reliability_events {
+                    journal_operation_at(
+                        &context,
+                        scheduler.snapshot().plant_elapsed_sec,
+                        "eclss_reliability_event",
+                        event.component_id.clone(),
+                        serde_json::to_value(event).unwrap_or_else(|_| json!({})),
+                    )
+                    .await;
+                }
                 let latest_sabatier = {
                     let mut sim = context.sabatier_sim.write().await;
                     sim.step(
@@ -1119,6 +1152,9 @@ fn spawn_simulation_task(
                     healthy: !airlock_snap.alarms.high_pressure_alarm_active
                         && !airlock_snap.alarms.low_pressure_alarm_active
                         && !airlock_snap.alarms.leak_detected
+                        && !eclss_snapshot.alarm_high_co2
+                        && !eclss_snapshot.alarm_low_o2
+                        && !eclss_snapshot.alarm_maintenance_required
                         && !thermal_snapshot.alarm_habitat_hot
                         && !thermal_snapshot.alarm_habitat_cold
                         && !thermal_snapshot.alarm_coolant_hot
@@ -1270,10 +1306,10 @@ fn build_core_historian_samples(
     water: &WaterSnapshot,
     safety: &SafetySnapshot,
 ) -> Vec<NewHistorianSample> {
-    let eclss_quality = if eclss.alarm_high_co2 || eclss.alarm_low_o2 {
-        TelemetryQuality::Uncertain
-    } else if power.alarm_bus_undervoltage {
+    let eclss_quality = if eclss.reliability.failed_count > 0 || power.alarm_bus_undervoltage {
         TelemetryQuality::Bad
+    } else if eclss.alarm_high_co2 || eclss.alarm_low_o2 || eclss.alarm_maintenance_required {
+        TelemetryQuality::Uncertain
     } else {
         TelemetryQuality::Good
     };
@@ -1341,7 +1377,9 @@ fn build_core_historian_samples(
         },
         NewHistorianSample {
             tag_id: "underhill.v1.eclss.00000.alarm_active".to_string(),
-            value: json!(eclss.alarm_high_co2 || eclss.alarm_low_o2),
+            value: json!(
+                eclss.alarm_high_co2 || eclss.alarm_low_o2 || eclss.alarm_maintenance_required
+            ),
             quality: eclss_quality,
             source: source.clone(),
         },
@@ -1529,6 +1567,16 @@ async fn journal_operation(
     payload: serde_json::Value,
 ) {
     let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
+    journal_operation_at(context, plant_elapsed_sec, kind, subject, payload).await;
+}
+
+async fn journal_operation_at(
+    context: &AppContext,
+    plant_elapsed_sec: f64,
+    kind: &'static str,
+    subject: String,
+    payload: serde_json::Value,
+) {
     let persistence = context.plant_persistence.clone();
     let result = tokio::task::spawn_blocking(move || {
         persistence.append_journal(plant_elapsed_sec, kind, subject, payload)
@@ -1649,6 +1697,66 @@ async fn api_water_snapshot(State(context): State<AppContext>) -> impl IntoRespo
 
 async fn api_safety_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
     axum::Json(context.safety_sim.read().await.snapshot())
+}
+
+async fn api_eclss_reliability(State(context): State<AppContext>) -> impl IntoResponse {
+    axum::Json(context.eclss_sim.read().await.snapshot().reliability)
+}
+
+async fn api_eclss_component_maintenance(
+    State(context): State<AppContext>,
+    Path(component_id): Path<String>,
+    axum::Json(request): axum::Json<EclssMaintenanceRequest>,
+) -> Result<axum::Json<EclssSnapshot>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
+    let (snapshot, events) = {
+        let mut sim = context.eclss_sim.write().await;
+        match request.action {
+            EclssMaintenanceAction::InjectFailure => sim.inject_component_failure(&component_id),
+            EclssMaintenanceAction::InjectDegradation => sim.inject_component_degradation(
+                &component_id,
+                request.health_pct.ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "health_pct is required for inject_degradation".to_string(),
+                    )
+                })?,
+            ),
+            EclssMaintenanceAction::StartRepair => {
+                sim.start_component_repair(&component_id).map(|_| ())
+            }
+            EclssMaintenanceAction::AddSpares => sim.add_component_spares(
+                &component_id,
+                request.quantity.ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "quantity is required for add_spares".to_string(),
+                    )
+                })?,
+            ),
+        }
+        .map_err(|error| {
+            let status = if error.starts_with("unknown ECLSS component") {
+                StatusCode::NOT_FOUND
+            } else if error.contains("no compatible spare") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, error)
+        })?;
+        (sim.snapshot(), sim.drain_reliability_events())
+    };
+    for event in events {
+        journal_operation(
+            &context,
+            "eclss_reliability_event",
+            event.component_id.clone(),
+            serde_json::to_value(event).unwrap_or_else(|_| json!({})),
+        )
+        .await;
+    }
+    Ok(axum::Json(snapshot))
 }
 
 async fn api_set_safety_hazards(
@@ -4007,7 +4115,12 @@ fn build_eclss_pea_descriptor(
     service_tag: &str,
 ) -> serde_json::Value {
     let service_state = subsystem_service_state(runtime_state, operator_state).to_lowercase();
-    let health_state = if snapshot.alarm_high_co2 || snapshot.alarm_low_o2 {
+    let health_state = if snapshot.reliability.failed_count > 0 {
+        "FAULT"
+    } else if snapshot.alarm_high_co2
+        || snapshot.alarm_low_o2
+        || snapshot.alarm_maintenance_required
+    {
         "WARN"
     } else {
         "OK"
@@ -4040,7 +4153,8 @@ fn build_eclss_pea_descriptor(
             "water_recovery_pct": snapshot.water_recovery_pct,
             "co2_capture_kgph": snapshot.co2_capture_kgph,
             "o2_generation_kgph": snapshot.o2_generation_kgph,
-            "power_kw": snapshot.power_kw
+            "power_kw": snapshot.power_kw,
+            "reliability": snapshot.reliability
         },
         "updated_at_ms": snapshot.timestamp_ms,
         "last_transition_ms": runtime_state.last_transition_ms
