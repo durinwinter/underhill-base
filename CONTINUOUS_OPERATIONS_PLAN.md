@@ -109,6 +109,8 @@ Persistence is split by purpose:
 
 Restart loads the checkpoint, replays the journal after its position, validates invariants, acquires the writer lease, and then resumes advancement.
 
+Checkpoint capture, state mutation, and state-bearing journal append share one plant transaction boundary. Transient connection diagnostics may update outside that boundary because they are explicitly reset on restore; physical, command, operator, maintenance, inventory, and scheduler state may not.
+
 ### 4.3 MTP and WinCC OA integration architecture
 
 WinCC OA is treated as the Process Orchestration Layer (POL), with one independent OPC UA client connection per Process Equipment Assembly (PEA). Underhill therefore adopts the MTP/VDI-VDE-NAMUR 2658 pattern rather than exposing every subsystem through one central OPC UA gateway.
@@ -204,6 +206,8 @@ Static scenarios are replaced by continuous drivers:
 
 Reference climate and consumption datasets are versioned inputs. Their provenance and uncertainty are recorded with each model release.
 
+External calibration and validation sources are governed by [REFERENCE_DATASETS.md](REFERENCE_DATASETS.md). That catalog separates direct physical evidence from diagnostic fixtures, security corpora, and structural analogs so domain-mismatched data cannot silently become Mars-base physics.
+
 ## 8. Degradation and maintenance
 
 Maintainable components carry operating hours, cycles, environment exposure, efficiency, health, estimated remaining life, inspection interval, failure modes, required isolation, tools, spares, repair duration, and verification criteria.
@@ -224,19 +228,43 @@ Each canonical tag declares stable ID, owner PEA, value type, engineering unit, 
 
 The catalog generates protocol surfaces and prevents OPC UA, UNS, i3X, HTTP, UI, and documentation from drifting apart.
 
-Target scale:
+“Datapoint” is not used as an ambiguous capacity unit. Underhill separately counts hidden physical state variables, canonical interface tags, active SCADA monitored items, emitted samples per second, alarm/events per second, and historian records. Multiple WinCC OA or agent subscriptions to one tag increase monitored-item and notification load but do not create new canonical tags.
+
+Target canonical interface scale:
 
 | Milestone | Process variables | Total interface tags |
 | --- | ---: | ---: |
 | Current prototype | 40-60 | about 100 |
 | Continuous-kernel demonstrator | about 250 | about 400 |
 | Survival spine | about 1,150 | about 1,800 |
-| Realistic autonomous base | about 3,300 | 4,600-5,300 |
-| High-detail digital twin | 8,000+ | 12,000+ |
+| Minimum realistic autonomous outpost | 5,000-8,000 | 12,000-25,000 |
+| Fully formed high-fidelity base | 25,000-50,000 | 60,000-120,000 |
+| Research-grade component digital twin | 100,000+ | 250,000+ |
+
+The fully formed target is budgeted across subsystem families as follows. These are interface tags, not all fast-published values:
+
+| Subsystem family | Target tags | Examples included |
+| --- | ---: | --- |
+| Mars environment and site services | 5,000 | weather, dust, radiation, terrain/site sensors, external boundaries |
+| Power generation, storage, and DC grid | 14,000 | cells/modules, strings, converters, buses, breakers, protection, quality, commands |
+| Thermal control and heat rejection | 10,000 | loops, branches, pumps, valves, exchangers, radiators, temperatures and flows |
+| Habitat atmosphere and ECLSS | 14,000 | compartments, gas species, ventilation, scrubbers, O2, trace contaminants, crew loads |
+| Water recovery, storage, and waste | 10,000 | tanks, treatment stages, quality, dosing, brine, hygiene and waste flows |
+| Safety, pressure structure, and radiation | 8,000 | fire/toxic gas, suppression, seals, hatches, structural and radiation monitoring |
+| Gas handling and Sabatier | 7,000 | storage, compressors, reactants, reactor trains, catalysts and products |
+| ISRU, manufacturing, and material closure | 9,000 | intake, separation, excavation, processing, fabrication and inventories |
+| Agriculture, food, and bioprocessing | 8,000 | growth zones, lighting, nutrients, climate, biomass and food stocks |
+| Robotics, logistics, and maintenance | 8,000 | robot joints/health, work cells, tools, work orders, spares and inspections |
+| EVA, mobility, airlocks, and suits | 4,000 | airlocks, suit consumables, rovers, charging, navigation and EVA state |
+| Communications, timing, compute, and cyber | 5,000 | links, clocks, compute health, OPC UA diagnostics, authority and security events |
+| Cross-plant diagnostics and conservation | 8,000 | mass/energy ledgers, sensor residuals, KPIs, forecasts and model confidence |
+| **Total planning envelope** | **110,000** | adjustable as PEA designs become concrete |
+
+At 110,000 tags, naive 10 Hz publication would produce 1.1 million samples per second and is neither realistic nor useful. The catalog assigns each tag an internal integration cadence, sensing cadence, publication class, deadband, event behavior, and retention policy. Fast protection and control values may run at 20-100 Hz internally; ordinary SCADA values commonly publish at 1 Hz or on change; inventory, wear, and forecast values publish much more slowly. WinCC OA receives operationally meaningful tags while high-rate component truth and waveforms can remain in specialized streams or validation forks.
 
 Publication cadence is tag-specific. Fast internal integration never requires broadcasting every tag at the same rate.
 
-For SCADA sizing, the catalog also records the PEA endpoint and WinCC OA subscription class. Capacity tests use at least 15 independent OPC UA sessions—not one aggregated session—and include reconnect bursts, monitored-item recreation, alarm/event load, and certificate operations. The realistic-base target of 4,600-5,300 interface tags should be tested at roughly 300-350 tags per PEA on average, while allowing survival-critical PEAs such as power and ECLSS to carry substantially more. Connection count, monitored-item count, notification rate, and historian write rate are separate budgets.
+For SCADA sizing, the catalog also records the PEA endpoint and WinCC OA subscription class. Capacity tests use at least 15 independent OPC UA sessions—not one aggregated session—and include reconnect bursts, monitored-item recreation, alarm/event load, and certificate operations. Tests progress through 5,000, 25,000, 100,000, and 250,000 canonical tags, while allowing survival-critical PEAs such as power and ECLSS to carry substantially more than the average. Connection count, monitored-item count, notification rate, and historian write rate are separate budgets.
 
 ## 10. Agent and controller contract
 
