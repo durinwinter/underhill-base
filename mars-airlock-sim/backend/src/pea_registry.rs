@@ -15,6 +15,7 @@ pub const DEFAULT_SABATIER_PEA_ID: &str = "SABATIER-PEA-001";
 pub const DEFAULT_POWER_PEA_ID: &str = "POWER-PEA-001";
 pub const DEFAULT_THERMAL_PEA_ID: &str = "THERMAL-PEA-001";
 pub const DEFAULT_WATER_PEA_ID: &str = "WATER-PEA-001";
+pub const DEFAULT_SAFETY_PEA_ID: &str = "SAFETY-PEA-001";
 
 pub const AIRLOCK_SERVICE_TAG: &str = "AirlockService";
 pub const ECLSS_SERVICE_TAG: &str = "EclssService";
@@ -22,8 +23,9 @@ pub const SABATIER_SERVICE_TAG: &str = "SabatierService";
 pub const POWER_SERVICE_TAG: &str = "PowerService";
 pub const THERMAL_SERVICE_TAG: &str = "ThermalService";
 pub const WATER_SERVICE_TAG: &str = "WaterService";
+pub const SAFETY_SERVICE_TAG: &str = "SafetyService";
 
-pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 6] = [
+pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 7] = [
     PeaDefinition {
         pea_id: DEFAULT_AIRLOCK_PEA_ID,
         pea_type: "AIRLOCK",
@@ -77,6 +79,15 @@ pub const ALL_PEA_DEFINITIONS: [PeaDefinition; 6] = [
         namespace_uri: "urn:underhill:water:mtp",
         endpoint_path: "/underhill/water",
         root_path: "Objects/Underhill/WaterPEA",
+    },
+    PeaDefinition {
+        pea_id: DEFAULT_SAFETY_PEA_ID,
+        pea_type: "SAFETY_STRUCTURE",
+        name: "Underhill Safety and Pressure Structure",
+        service_tag: SAFETY_SERVICE_TAG,
+        namespace_uri: "urn:underhill:safety:mtp",
+        endpoint_path: "/underhill/safety",
+        root_path: "Objects/Underhill/SafetyPEA",
     },
 ];
 

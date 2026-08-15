@@ -16,7 +16,8 @@ use tracing::{error, info, warn};
 use crate::{
     PeaRuntimeState,
     subsystems::{
-        EclssSimulation, PowerSimulation, SabatierSimulation, ThermalSimulation, WaterSimulation,
+        EclssSimulation, PowerSimulation, SabatierSimulation, SafetySimulation, ThermalSimulation,
+        WaterSimulation,
     },
 };
 
@@ -176,6 +177,34 @@ struct WaterNodes {
     alarm_water_quality: NodeId,
 }
 
+#[derive(Clone)]
+struct SafetyNodes {
+    endpoint_url: NodeId,
+    security_mode: NodeId,
+    service_state: NodeId,
+    deployed: NodeId,
+    running: NodeId,
+    habitat_pressure_kpa: NodeId,
+    pressure_decay_kpa_min: NodeId,
+    leak_rate_kgph: NodeId,
+    makeup_gas_kgph: NodeId,
+    mass_balance_error_kgph: NodeId,
+    smoke_ppm: NodeId,
+    carbon_monoxide_ppm: NodeId,
+    fire_heat_release_kw: NodeId,
+    suppression_agent_kg: NodeId,
+    structural_integrity_pct: NodeId,
+    internal_radiation_msv_h: NodeId,
+    cumulative_dose_msv: NodeId,
+    monitoring_available: NodeId,
+    alarm_low_pressure: NodeId,
+    alarm_rapid_decompression: NodeId,
+    alarm_fire: NodeId,
+    alarm_toxic_gas: NodeId,
+    alarm_radiation: NodeId,
+    alarm_structural: NodeId,
+}
+
 pub fn spawn_eclss_opcua_server(
     sim: Arc<RwLock<EclssSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
@@ -277,6 +306,27 @@ pub fn spawn_water_opcua_server(
     tokio::spawn(async move {
         if let Err(err) = run_water_opcua_server(sim, runtime, config).await {
             error!("Water OPC UA server exited with error: {err}");
+        }
+    });
+}
+
+pub fn spawn_safety_opcua_server(
+    sim: Arc<RwLock<SafetySimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    port: u16,
+    security_profile: String,
+) {
+    let config = SubsystemOpcuaConfig::new(
+        port,
+        "/underhill/safety",
+        "./pki/safety",
+        security_profile,
+        "Underhill Safety OPC UA Server",
+        "urn:underhill:safety:opcua-server",
+    );
+    tokio::spawn(async move {
+        if let Err(err) = run_safety_opcua_server(sim, runtime, config).await {
+            error!("Safety OPC UA server exited with error: {err}");
         }
     });
 }
@@ -840,6 +890,134 @@ async fn run_water_opcua_server(
                 values.into_iter().map(|(node, value)| (node, None, value)),
             ) {
                 warn!("Failed updating Water OPC UA values: {err}");
+            }
+        }
+    });
+    run_server(server, &config).await?;
+    handle.cancel();
+    let _ = sync_task.await;
+    Ok(())
+}
+
+async fn run_safety_opcua_server(
+    sim: Arc<RwLock<SafetySimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    config: SubsystemOpcuaConfig,
+) -> anyhow::Result<()> {
+    let namespace_uri = "urn:underhill:safety:mtp";
+    let (server, handle) = build_server(&config, namespace_uri)?;
+    let manager = handle
+        .node_managers()
+        .get_of_type::<SimpleNodeManager>()
+        .ok_or_else(|| anyhow::anyhow!("SimpleNodeManager not available for Safety"))?;
+    let ns = handle
+        .get_namespace_index(namespace_uri)
+        .ok_or_else(|| anyhow::anyhow!("Namespace index unavailable for Safety"))?;
+    let nodes = build_safety_address_space(ns, &manager);
+    let subscriptions = handle.subscriptions().clone();
+    let server_handle = handle.clone();
+    let endpoint_url = config.endpoint_url();
+    let security_profile = config.security_profile.clone();
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = server_handle.token().cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            let snapshot = sim.read().await.snapshot();
+            let runtime_state = *runtime.read().await;
+            let values = vec![
+                (
+                    &nodes.endpoint_url,
+                    DataValue::new_now(endpoint_url.clone()),
+                ),
+                (
+                    &nodes.security_mode,
+                    DataValue::new_now(security_profile.clone()),
+                ),
+                (
+                    &nodes.service_state,
+                    DataValue::new_now(state_for_runtime(runtime_state)),
+                ),
+                (&nodes.deployed, DataValue::new_now(runtime_state.deployed)),
+                (&nodes.running, DataValue::new_now(runtime_state.running)),
+                (
+                    &nodes.habitat_pressure_kpa,
+                    DataValue::new_now(snapshot.habitat_pressure_kpa),
+                ),
+                (
+                    &nodes.pressure_decay_kpa_min,
+                    DataValue::new_now(snapshot.pressure_decay_kpa_per_min),
+                ),
+                (
+                    &nodes.leak_rate_kgph,
+                    DataValue::new_now(snapshot.leak_rate_kgph),
+                ),
+                (
+                    &nodes.makeup_gas_kgph,
+                    DataValue::new_now(snapshot.makeup_gas_kgph),
+                ),
+                (
+                    &nodes.mass_balance_error_kgph,
+                    DataValue::new_now(snapshot.instantaneous_mass_balance_error_kgph),
+                ),
+                (&nodes.smoke_ppm, DataValue::new_now(snapshot.smoke_ppm)),
+                (
+                    &nodes.carbon_monoxide_ppm,
+                    DataValue::new_now(snapshot.carbon_monoxide_ppm),
+                ),
+                (
+                    &nodes.fire_heat_release_kw,
+                    DataValue::new_now(snapshot.fire_heat_release_kw),
+                ),
+                (
+                    &nodes.suppression_agent_kg,
+                    DataValue::new_now(snapshot.suppression_agent_kg),
+                ),
+                (
+                    &nodes.structural_integrity_pct,
+                    DataValue::new_now(snapshot.structural_integrity_pct),
+                ),
+                (
+                    &nodes.internal_radiation_msv_h,
+                    DataValue::new_now(snapshot.internal_radiation_msv_h),
+                ),
+                (
+                    &nodes.cumulative_dose_msv,
+                    DataValue::new_now(snapshot.cumulative_internal_dose_msv),
+                ),
+                (
+                    &nodes.monitoring_available,
+                    DataValue::new_now(snapshot.monitoring_available),
+                ),
+                (
+                    &nodes.alarm_low_pressure,
+                    DataValue::new_now(snapshot.alarm_low_pressure),
+                ),
+                (
+                    &nodes.alarm_rapid_decompression,
+                    DataValue::new_now(snapshot.alarm_rapid_decompression),
+                ),
+                (&nodes.alarm_fire, DataValue::new_now(snapshot.alarm_fire)),
+                (
+                    &nodes.alarm_toxic_gas,
+                    DataValue::new_now(snapshot.alarm_toxic_gas),
+                ),
+                (
+                    &nodes.alarm_radiation,
+                    DataValue::new_now(snapshot.alarm_radiation),
+                ),
+                (
+                    &nodes.alarm_structural,
+                    DataValue::new_now(snapshot.alarm_structural),
+                ),
+            ];
+            if let Err(err) = manager.set_values(
+                &subscriptions,
+                values.into_iter().map(|(node, value)| (node, None, value)),
+            ) {
+                warn!("Failed updating Safety OPC UA values: {err}");
             }
         }
     });
@@ -1859,6 +2037,156 @@ fn build_water_address_space(
         alarm_wastewater_high,
         alarm_brine_high,
         alarm_water_quality,
+    }
+}
+
+fn build_safety_address_space(
+    ns: u16,
+    manager: &Arc<opcua::server::node_manager::memory::InMemoryNodeManager<SimpleNodeManagerImpl>>,
+) -> SafetyNodes {
+    let underhill = NodeId::new(ns, "Underhill");
+    let pea = NodeId::new(ns, "Underhill.SafetyPEA");
+    let diagnostics = NodeId::new(ns, "Underhill.SafetyPEA.Diagnostics");
+    let services = NodeId::new(ns, "Underhill.SafetyPEA.Services");
+    let service = NodeId::new(ns, "Underhill.SafetyPEA.Services.SafetyService");
+    let control = NodeId::new(
+        ns,
+        "Underhill.SafetyPEA.Services.SafetyService.ServiceControl",
+    );
+    let data = NodeId::new(ns, "Underhill.SafetyPEA.DataAssemblies");
+    let pressure = NodeId::new(ns, "Underhill.SafetyPEA.DataAssemblies.PressureIntegrity");
+    let fire_gas = NodeId::new(ns, "Underhill.SafetyPEA.DataAssemblies.FireGas");
+    let radiation = NodeId::new(ns, "Underhill.SafetyPEA.DataAssemblies.Radiation");
+    let alarms = NodeId::new(ns, "Underhill.SafetyPEA.DataAssemblies.Alarms");
+    let mut space = manager.address_space().write();
+    space.add_folder(
+        &underhill,
+        "Underhill",
+        "Underhill",
+        &NodeId::objects_folder_id(),
+    );
+    space.add_folder(&pea, "SafetyPEA", "SafetyPEA", &underhill);
+    for (node, browse, parent) in [
+        (&diagnostics, "Diagnostics", &pea),
+        (&services, "Services", &pea),
+        (&service, "SafetyService", &services),
+        (&control, "ServiceControl", &service),
+        (&data, "DataAssemblies", &pea),
+        (&pressure, "PressureIntegrity", &data),
+        (&fire_gas, "FireGas", &data),
+        (&radiation, "Radiation", &data),
+        (&alarms, "Alarms", &data),
+    ] {
+        space.add_folder(node, browse, browse, parent);
+    }
+    let node = |suffix: &str| NodeId::new(ns, format!("Underhill.SafetyPEA.{suffix}"));
+    let endpoint_url = node("Diagnostics.EndpointUrl");
+    let security_mode = node("Diagnostics.SecurityMode");
+    let service_state = node("Services.SafetyService.ServiceControl.State");
+    let deployed = node("Services.SafetyService.ServiceControl.Deployed");
+    let running = node("Services.SafetyService.ServiceControl.Running");
+    let habitat_pressure_kpa = node("DataAssemblies.PressureIntegrity.HabitatPressureKpa");
+    let pressure_decay_kpa_min = node("DataAssemblies.PressureIntegrity.PressureDecayKpaMin");
+    let leak_rate_kgph = node("DataAssemblies.PressureIntegrity.LeakRateKgph");
+    let makeup_gas_kgph = node("DataAssemblies.PressureIntegrity.MakeupGasKgph");
+    let mass_balance_error_kgph = node("Diagnostics.InstantaneousMassBalanceErrorKgph");
+    let smoke_ppm = node("DataAssemblies.FireGas.SmokePpm");
+    let carbon_monoxide_ppm = node("DataAssemblies.FireGas.CarbonMonoxidePpm");
+    let fire_heat_release_kw = node("DataAssemblies.FireGas.FireHeatReleaseKw");
+    let suppression_agent_kg = node("DataAssemblies.FireGas.SuppressionAgentKg");
+    let structural_integrity_pct = node("DataAssemblies.PressureIntegrity.StructuralIntegrityPct");
+    let internal_radiation_msv_h = node("DataAssemblies.Radiation.InternalRadiationMsvH");
+    let cumulative_dose_msv = node("DataAssemblies.Radiation.CumulativeDoseMsv");
+    let monitoring_available = node("DataAssemblies.Alarms.MonitoringAvailable");
+    let alarm_low_pressure = node("DataAssemblies.Alarms.LowPressure");
+    let alarm_rapid_decompression = node("DataAssemblies.Alarms.RapidDecompression");
+    let alarm_fire = node("DataAssemblies.Alarms.Fire");
+    let alarm_toxic_gas = node("DataAssemblies.Alarms.ToxicGas");
+    let alarm_radiation = node("DataAssemblies.Alarms.Radiation");
+    let alarm_structural = node("DataAssemblies.Alarms.Structural");
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &endpoint_url,
+        "EndpointUrl",
+        "",
+        false,
+    );
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &security_mode,
+        "SecurityMode",
+        "NONE",
+        false,
+    );
+    insert_var(&mut space, &control, &service_state, "State", "Idle", false);
+    insert_var(&mut space, &control, &deployed, "Deployed", true, false);
+    insert_var(&mut space, &control, &running, "Running", true, false);
+    for (parent, id, browse) in [
+        (&pressure, &habitat_pressure_kpa, "HabitatPressureKpa"),
+        (&pressure, &pressure_decay_kpa_min, "PressureDecayKpaMin"),
+        (&pressure, &leak_rate_kgph, "LeakRateKgph"),
+        (&pressure, &makeup_gas_kgph, "MakeupGasKgph"),
+        (
+            &diagnostics,
+            &mass_balance_error_kgph,
+            "InstantaneousMassBalanceErrorKgph",
+        ),
+        (&fire_gas, &smoke_ppm, "SmokePpm"),
+        (&fire_gas, &carbon_monoxide_ppm, "CarbonMonoxidePpm"),
+        (&fire_gas, &fire_heat_release_kw, "FireHeatReleaseKw"),
+        (&fire_gas, &suppression_agent_kg, "SuppressionAgentKg"),
+        (
+            &pressure,
+            &structural_integrity_pct,
+            "StructuralIntegrityPct",
+        ),
+        (
+            &radiation,
+            &internal_radiation_msv_h,
+            "InternalRadiationMsvH",
+        ),
+        (&radiation, &cumulative_dose_msv, "CumulativeDoseMsv"),
+    ] {
+        insert_var(&mut space, parent, id, browse, 0.0f64, false);
+    }
+    for (id, browse) in [
+        (&monitoring_available, "MonitoringAvailable"),
+        (&alarm_low_pressure, "LowPressure"),
+        (&alarm_rapid_decompression, "RapidDecompression"),
+        (&alarm_fire, "Fire"),
+        (&alarm_toxic_gas, "ToxicGas"),
+        (&alarm_radiation, "Radiation"),
+        (&alarm_structural, "Structural"),
+    ] {
+        insert_var(&mut space, &alarms, id, browse, false, false);
+    }
+    SafetyNodes {
+        endpoint_url,
+        security_mode,
+        service_state,
+        deployed,
+        running,
+        habitat_pressure_kpa,
+        pressure_decay_kpa_min,
+        leak_rate_kgph,
+        makeup_gas_kgph,
+        mass_balance_error_kgph,
+        smoke_ppm,
+        carbon_monoxide_ppm,
+        fire_heat_release_kw,
+        suppression_agent_kg,
+        structural_integrity_pct,
+        internal_radiation_msv_h,
+        cumulative_dose_msv,
+        monitoring_available,
+        alarm_low_pressure,
+        alarm_rapid_decompression,
+        alarm_fire,
+        alarm_toxic_gas,
+        alarm_radiation,
+        alarm_structural,
     }
 }
 

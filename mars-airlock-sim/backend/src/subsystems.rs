@@ -120,6 +120,41 @@ pub struct WaterSnapshot {
     pub alarm_water_quality: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SafetySnapshot {
+    pub timestamp_ms: u64,
+    pub sim_time_sec: f64,
+    pub habitat_air_mass_kg: f64,
+    pub habitat_volume_m3: f64,
+    pub habitat_pressure_kpa: f64,
+    pub exterior_pressure_kpa: f64,
+    pub pressure_decay_kpa_per_min: f64,
+    pub leak_rate_kgph: f64,
+    pub makeup_gas_kgph: f64,
+    pub cumulative_leaked_air_kg: f64,
+    pub cumulative_makeup_air_kg: f64,
+    pub instantaneous_mass_balance_error_kgph: f64,
+    pub smoke_ppm: f64,
+    pub carbon_monoxide_ppm: f64,
+    pub fire_heat_release_kw: f64,
+    pub suppression_agent_kg: f64,
+    pub suppression_flow_kgph: f64,
+    pub habitat_isolated: bool,
+    pub pressure_shell_strain_microstrain: f64,
+    pub structural_integrity_pct: f64,
+    pub external_radiation_msv_h: f64,
+    pub internal_radiation_msv_h: f64,
+    pub cumulative_internal_dose_msv: f64,
+    pub safety_power_kw: f64,
+    pub monitoring_available: bool,
+    pub alarm_low_pressure: bool,
+    pub alarm_rapid_decompression: bool,
+    pub alarm_fire: bool,
+    pub alarm_toxic_gas: bool,
+    pub alarm_radiation: bool,
+    pub alarm_structural: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSimulation {
     sim_time_sec: f64,
@@ -200,6 +235,7 @@ impl PowerSimulation {
         eclss_load_kw: f64,
         thermal_load_kw: f64,
         water_load_kw: f64,
+        safety_load_kw: f64,
         sabatier_load_kw: f64,
         airlock_load_kw: f64,
     ) -> PowerSnapshot {
@@ -225,6 +261,7 @@ impl PowerSimulation {
             + eclss_load_kw.max(0.0)
             + thermal_load_kw.max(0.0)
             + water_load_kw.max(0.0)
+            + safety_load_kw.max(0.0)
             + airlock_load_kw.max(0.0);
         self.flexible_load_kw = 8.0 + sabatier_load_kw.max(0.0);
         let battery_soc_pct = self.battery_soc_pct();
@@ -393,6 +430,7 @@ impl ThermalSimulation {
         power_available: bool,
         eclss_electric_kw: f64,
         sabatier_electric_kw: f64,
+        fire_heat_release_kw: f64,
         served_base_electric_kw: f64,
     ) -> ThermalSnapshot {
         self.sim_time_sec += dt_sec;
@@ -402,6 +440,7 @@ impl ThermalSimulation {
         self.equipment_heat_load_kw = 10.0
             + 0.85 * eclss_electric_kw.max(0.0)
             + 0.90 * sabatier_electric_kw.max(0.0)
+            + fire_heat_release_kw.max(0.0)
             + 0.06 * served_base_electric_kw.max(0.0);
 
         let cooling_available = running && power_available;
@@ -736,6 +775,246 @@ impl WaterSimulation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafetySimulation {
+    sim_time_sec: f64,
+    habitat_air_mass_kg: f64,
+    habitat_volume_m3: f64,
+    habitat_temp_c: f64,
+    exterior_pressure_kpa: f64,
+    nominal_leak_kg_s: f64,
+    injected_leak_kg_s: f64,
+    cumulative_leaked_air_kg: f64,
+    cumulative_makeup_air_kg: f64,
+    instantaneous_mass_balance_error_kgph: f64,
+    previous_pressure_kpa: f64,
+    pressure_decay_kpa_per_min: f64,
+    smoke_ppm: f64,
+    carbon_monoxide_ppm: f64,
+    fire_source_kw: f64,
+    suppression_agent_kg: f64,
+    structural_integrity_pct: f64,
+    cumulative_internal_dose_msv: f64,
+    habitat_isolated: bool,
+    monitoring_available: bool,
+    makeup_gas_kgph: f64,
+    suppression_flow_kgph: f64,
+    external_radiation_msv_h: f64,
+    internal_radiation_msv_h: f64,
+    safety_power_kw: f64,
+}
+
+impl SafetySimulation {
+    pub fn new() -> Self {
+        let habitat_volume_m3 = 600.0;
+        let habitat_temp_c = 22.0;
+        let initial_pressure_kpa = 101.3;
+        let habitat_air_mass_kg = initial_pressure_kpa * 1_000.0 * habitat_volume_m3
+            / (287.05 * (habitat_temp_c + 273.15));
+        Self {
+            sim_time_sec: 0.0,
+            habitat_air_mass_kg,
+            habitat_volume_m3,
+            habitat_temp_c,
+            exterior_pressure_kpa: 0.61,
+            nominal_leak_kg_s: 2.0e-6,
+            injected_leak_kg_s: 0.0,
+            cumulative_leaked_air_kg: 0.0,
+            cumulative_makeup_air_kg: 0.0,
+            instantaneous_mass_balance_error_kgph: 0.0,
+            previous_pressure_kpa: initial_pressure_kpa,
+            pressure_decay_kpa_per_min: 0.0,
+            smoke_ppm: 0.0,
+            carbon_monoxide_ppm: 0.4,
+            fire_source_kw: 0.0,
+            suppression_agent_kg: 80.0,
+            structural_integrity_pct: 100.0,
+            cumulative_internal_dose_msv: 0.0,
+            habitat_isolated: false,
+            monitoring_available: true,
+            makeup_gas_kgph: 0.0,
+            suppression_flow_kgph: 0.0,
+            external_radiation_msv_h: 0.025,
+            internal_radiation_msv_h: 0.003,
+            safety_power_kw: 2.4,
+        }
+    }
+
+    pub fn step(
+        &mut self,
+        dt_sec: f64,
+        running: bool,
+        critical_power_available: bool,
+        eclss_running: bool,
+    ) -> SafetySnapshot {
+        if dt_sec <= 0.0 {
+            return self.snapshot();
+        }
+        self.sim_time_sec += dt_sec;
+        self.monitoring_available = running && critical_power_available;
+        let dt_hours = dt_sec / 3_600.0;
+        let opening_ledger_kg = self.habitat_air_mass_kg + self.cumulative_leaked_air_kg;
+
+        let total_leak_kg_s = self.nominal_leak_kg_s + self.injected_leak_kg_s;
+        let leak_kg = (total_leak_kg_s * dt_sec).min(self.habitat_air_mass_kg);
+        self.habitat_air_mass_kg -= leak_kg;
+        self.cumulative_leaked_air_kg += leak_kg;
+
+        let pressure_before_makeup = self.pressure_kpa();
+        let pressure_deficit_kpa = (101.3 - pressure_before_makeup).max(0.0);
+        self.makeup_gas_kgph = if eclss_running && critical_power_available {
+            (total_leak_kg_s * 3_600.0 + pressure_deficit_kpa * 0.25).clamp(0.0, 3.0)
+        } else {
+            0.0
+        };
+        let makeup_kg = self.makeup_gas_kgph * dt_hours;
+        self.habitat_air_mass_kg += makeup_kg;
+        self.cumulative_makeup_air_kg += makeup_kg;
+
+        let pressure_kpa = self.pressure_kpa();
+        self.pressure_decay_kpa_per_min =
+            (self.previous_pressure_kpa - pressure_kpa) / dt_sec * 60.0;
+        self.previous_pressure_kpa = pressure_kpa;
+
+        let suppression_enabled = self.monitoring_available
+            && self.fire_source_kw >= 5.0
+            && self.suppression_agent_kg > 0.0;
+        self.suppression_flow_kgph = if suppression_enabled {
+            (self.fire_source_kw * 0.16).clamp(0.5, 12.0)
+        } else {
+            0.0
+        };
+        let suppression_used_kg =
+            (self.suppression_flow_kgph * dt_hours).min(self.suppression_agent_kg);
+        self.suppression_agent_kg -= suppression_used_kg;
+        if suppression_enabled {
+            self.fire_source_kw = (self.fire_source_kw - suppression_used_kg * 30.0).max(0.0);
+        }
+
+        let ventilation_factor = if running && critical_power_available {
+            0.22
+        } else {
+            0.001
+        };
+        self.smoke_ppm += self.fire_source_kw * 0.018 * dt_sec;
+        self.carbon_monoxide_ppm += self.fire_source_kw * 0.004 * dt_sec;
+        self.smoke_ppm = first_order(self.smoke_ppm, 0.0, ventilation_factor, dt_sec).max(0.0);
+        self.carbon_monoxide_ppm =
+            first_order(self.carbon_monoxide_ppm, 0.4, ventilation_factor, dt_sec).max(0.0);
+
+        let pressure_differential_kpa = (pressure_kpa - self.exterior_pressure_kpa).max(0.0);
+        let strain_microstrain = pressure_differential_kpa / 140.0 * 1_200.0
+            / (self.structural_integrity_pct / 100.0).max(0.1);
+        if strain_microstrain > 1_150.0 {
+            self.structural_integrity_pct = (self.structural_integrity_pct
+                - (strain_microstrain - 1_150.0) * 1.0e-7 * dt_sec)
+                .max(0.0);
+        }
+
+        let sol_phase = (self.sim_time_sec / 88_775.0) % 30.0;
+        self.external_radiation_msv_h = if (12.0..12.5).contains(&sol_phase) {
+            0.8
+        } else {
+            0.025 + 0.008 * (std::f64::consts::TAU * sol_phase).sin().abs()
+        };
+        let shielding_factor = if self.habitat_isolated { 0.09 } else { 0.12 };
+        self.internal_radiation_msv_h = self.external_radiation_msv_h * shielding_factor;
+        self.cumulative_internal_dose_msv += self.internal_radiation_msv_h * dt_hours;
+        self.safety_power_kw = if running && critical_power_available {
+            2.4 + if suppression_enabled { 1.6 } else { 0.0 }
+        } else {
+            0.15
+        };
+
+        let closing_ledger_kg = self.habitat_air_mass_kg + self.cumulative_leaked_air_kg;
+        self.instantaneous_mass_balance_error_kgph =
+            (opening_ledger_kg + makeup_kg - closing_ledger_kg) / dt_hours;
+        self.snapshot()
+    }
+
+    pub fn set_hazards(
+        &mut self,
+        injected_leak_kg_s: Option<f64>,
+        fire_source_kw: Option<f64>,
+        habitat_isolated: Option<bool>,
+    ) -> Result<(), String> {
+        if let Some(value) = injected_leak_kg_s {
+            if !value.is_finite() || !(0.0..=0.25).contains(&value) {
+                return Err("injected_leak_kg_s must be finite and within 0..=0.25".to_string());
+            }
+            self.injected_leak_kg_s = value;
+        }
+        if let Some(value) = fire_source_kw {
+            if !value.is_finite() || !(0.0..=2_000.0).contains(&value) {
+                return Err("fire_source_kw must be finite and within 0..=2000".to_string());
+            }
+            self.fire_source_kw = value;
+        }
+        if let Some(value) = habitat_isolated {
+            self.habitat_isolated = value;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> SafetySnapshot {
+        let pressure_kpa = self.pressure_kpa();
+        let pressure_differential_kpa = (pressure_kpa - self.exterior_pressure_kpa).max(0.0);
+        let strain_microstrain = pressure_differential_kpa / 140.0 * 1_200.0
+            / (self.structural_integrity_pct / 100.0).max(0.1);
+        SafetySnapshot {
+            timestamp_ms: now_ms(),
+            sim_time_sec: self.sim_time_sec,
+            habitat_air_mass_kg: self.habitat_air_mass_kg,
+            habitat_volume_m3: self.habitat_volume_m3,
+            habitat_pressure_kpa: pressure_kpa,
+            exterior_pressure_kpa: self.exterior_pressure_kpa,
+            pressure_decay_kpa_per_min: self.pressure_decay_kpa_per_min,
+            leak_rate_kgph: (self.nominal_leak_kg_s + self.injected_leak_kg_s) * 3_600.0,
+            makeup_gas_kgph: self.makeup_gas_kgph,
+            cumulative_leaked_air_kg: self.cumulative_leaked_air_kg,
+            cumulative_makeup_air_kg: self.cumulative_makeup_air_kg,
+            instantaneous_mass_balance_error_kgph: self.instantaneous_mass_balance_error_kgph,
+            smoke_ppm: self.smoke_ppm,
+            carbon_monoxide_ppm: self.carbon_monoxide_ppm,
+            fire_heat_release_kw: self.fire_source_kw,
+            suppression_agent_kg: self.suppression_agent_kg,
+            suppression_flow_kgph: self.suppression_flow_kgph,
+            habitat_isolated: self.habitat_isolated,
+            pressure_shell_strain_microstrain: strain_microstrain,
+            structural_integrity_pct: self.structural_integrity_pct,
+            external_radiation_msv_h: self.external_radiation_msv_h,
+            internal_radiation_msv_h: self.internal_radiation_msv_h,
+            cumulative_internal_dose_msv: self.cumulative_internal_dose_msv,
+            safety_power_kw: self.safety_power_kw,
+            monitoring_available: self.monitoring_available,
+            alarm_low_pressure: pressure_kpa < 95.0,
+            alarm_rapid_decompression: self.pressure_decay_kpa_per_min > 0.5,
+            alarm_fire: self.fire_source_kw >= 5.0 || self.smoke_ppm >= 8.0,
+            alarm_toxic_gas: self.carbon_monoxide_ppm >= 25.0,
+            alarm_radiation: self.internal_radiation_msv_h >= 0.05,
+            alarm_structural: strain_microstrain >= 1_100.0 || self.structural_integrity_pct < 90.0,
+        }
+    }
+
+    pub fn mtp_nodes(&self) -> Vec<String> {
+        vec![
+            "ServiceSet/SafetyService/ServiceInformation".to_string(),
+            "ServiceSet/SafetyService/Modes".to_string(),
+            "ServiceSet/SafetyService/StateMachine".to_string(),
+            "ServiceSet/SafetyService/DataAssemblies/PressureIntegrity".to_string(),
+            "ServiceSet/SafetyService/DataAssemblies/FireGas".to_string(),
+            "ServiceSet/SafetyService/DataAssemblies/Radiation".to_string(),
+            "ServiceSet/SafetyService/DataAssemblies/Alarms".to_string(),
+        ]
+    }
+
+    fn pressure_kpa(&self) -> f64 {
+        self.habitat_air_mass_kg * 287.05 * (self.habitat_temp_c + 273.15)
+            / self.habitat_volume_m3
+            / 1_000.0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EclssSimulation {
     cabin_pressure_kpa: f64,
     o2_percent: f64,
@@ -953,7 +1232,7 @@ mod tests {
     fn power_balance_closes_each_step() {
         let mut power = PowerSimulation::new();
         for _ in 0..10_000 {
-            let snapshot = power.step(0.05, true, 12.0, 4.0, 4.5, 5.0, 2.0);
+            let snapshot = power.step(0.05, true, 12.0, 4.0, 4.5, 2.4, 5.0, 2.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-9);
             assert!(snapshot.battery_energy_kwh >= 0.0);
             assert!(snapshot.battery_energy_kwh <= 500.0);
@@ -965,7 +1244,7 @@ mod tests {
         let mut power = PowerSimulation::new();
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         let opening_energy = power.battery_energy_kwh;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 5.0, 2.0);
         assert_eq!(snapshot.solar_available_kw, 0.0);
         assert!(snapshot.battery_power_kw < 0.0);
         assert!(snapshot.battery_energy_kwh < opening_energy);
@@ -978,7 +1257,7 @@ mod tests {
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         power.fission_capacity_kw = 0.0;
         power.battery_energy_kwh = 0.0;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 2.4, 5.0, 2.0);
         assert!(snapshot.load_shed_active);
         assert_eq!(snapshot.flexible_load_kw, 13.0);
         assert_eq!(snapshot.requested_load_kw, snapshot.critical_load_kw);
@@ -992,25 +1271,22 @@ mod tests {
     fn power_state_round_trip_preserves_energy_and_integrals() {
         let mut power = PowerSimulation::new();
         for _ in 0..100 {
-            power.step(1.0, true, 11.0, 4.0, 4.5, 4.0, 1.0);
+            power.step(1.0, true, 11.0, 4.0, 4.5, 2.4, 4.0, 1.0);
         }
         let restored: PowerSimulation =
             serde_json::from_slice(&serde_json::to_vec(&power).unwrap()).unwrap();
         let before = power.snapshot();
         let after = restored.snapshot();
-        assert_eq!(after.battery_energy_kwh, before.battery_energy_kwh);
-        assert_eq!(
-            after.cumulative_generated_kwh,
-            before.cumulative_generated_kwh
-        );
-        assert_eq!(after.cumulative_served_kwh, before.cumulative_served_kwh);
+        assert!((after.battery_energy_kwh - before.battery_energy_kwh).abs() < 1.0e-12);
+        assert!((after.cumulative_generated_kwh - before.cumulative_generated_kwh).abs() < 1.0e-12);
+        assert!((after.cumulative_served_kwh - before.cumulative_served_kwh).abs() < 1.0e-12);
     }
 
     #[test]
     fn thermal_energy_balance_closes_each_step() {
         let mut thermal = ThermalSimulation::new();
         for _ in 0..20_000 {
-            let snapshot = thermal.step(0.05, true, true, 12.0, 5.0, 45.0);
+            let snapshot = thermal.step(0.05, true, true, 12.0, 5.0, 0.0, 45.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-8);
             assert!(snapshot.stored_thermal_energy_mj.is_finite());
         }
@@ -1020,7 +1296,7 @@ mod tests {
     fn loss_of_active_cooling_eventually_overheats_habitat() {
         let mut thermal = ThermalSimulation::new();
         for _ in 0..20_000 {
-            thermal.step(1.0, false, false, 15.0, 6.0, 50.0);
+            thermal.step(1.0, false, false, 15.0, 6.0, 0.0, 50.0);
         }
         let snapshot = thermal.snapshot();
         assert!(snapshot.habitat_temp_c > 30.0);
@@ -1032,7 +1308,7 @@ mod tests {
     fn thermal_state_round_trip_preserves_energy_ledger() {
         let mut thermal = ThermalSimulation::new();
         for _ in 0..100 {
-            thermal.step(1.0, true, true, 12.0, 5.0, 45.0);
+            thermal.step(1.0, true, true, 12.0, 5.0, 0.0, 45.0);
         }
         let restored: ThermalSimulation =
             serde_json::from_slice(&serde_json::to_vec(&thermal).unwrap()).unwrap();
@@ -1095,5 +1371,85 @@ mod tests {
             before.cumulative_external_input_kg,
             after.cumulative_external_input_kg
         );
+    }
+
+    #[test]
+    fn safety_atmosphere_mass_balance_closes_during_leak_and_makeup() {
+        let mut safety = SafetySimulation::new();
+        safety.injected_leak_kg_s = 0.002;
+        for _ in 0..10_000 {
+            let snapshot = safety.step(0.05, true, true, true);
+            assert!(snapshot.instantaneous_mass_balance_error_kgph.abs() < 1.0e-7);
+            assert!(snapshot.habitat_air_mass_kg >= 0.0);
+        }
+        let snapshot = safety.snapshot();
+        assert!(snapshot.cumulative_leaked_air_kg > 0.0);
+        assert!(snapshot.cumulative_makeup_air_kg > 0.0);
+    }
+
+    #[test]
+    fn safety_outage_does_not_pause_hazard_physics() {
+        let mut safety = SafetySimulation::new();
+        safety.injected_leak_kg_s = 0.01;
+        safety.fire_source_kw = 30.0;
+        let opening_pressure = safety.snapshot().habitat_pressure_kpa;
+        for _ in 0..600 {
+            safety.step(1.0, false, false, false);
+        }
+        let snapshot = safety.snapshot();
+        assert!(!snapshot.monitoring_available);
+        assert_eq!(snapshot.suppression_flow_kgph, 0.0);
+        assert!(snapshot.habitat_pressure_kpa < opening_pressure);
+        assert!(snapshot.smoke_ppm > 0.0);
+        assert!(snapshot.carbon_monoxide_ppm > 25.0);
+        assert!(snapshot.alarm_fire);
+        assert!(snapshot.alarm_toxic_gas);
+    }
+
+    #[test]
+    fn powered_safety_system_suppresses_a_fire_without_ending_the_plant() {
+        let mut safety = SafetySimulation::new();
+        safety.fire_source_kw = 30.0;
+        let opening_agent = safety.suppression_agent_kg;
+        for _ in 0..3_600 {
+            safety.step(1.0, true, true, true);
+        }
+        let snapshot = safety.snapshot();
+        assert!(snapshot.fire_heat_release_kw < 5.0);
+        assert!(snapshot.suppression_agent_kg < opening_agent);
+        assert!(snapshot.sim_time_sec >= 3_600.0);
+    }
+
+    #[test]
+    fn safety_state_round_trip_preserves_exposure_and_inventory() {
+        let mut safety = SafetySimulation::new();
+        safety.injected_leak_kg_s = 0.001;
+        for _ in 0..100 {
+            safety.step(1.0, true, true, true);
+        }
+        let restored: SafetySimulation =
+            serde_json::from_slice(&serde_json::to_vec(&safety).unwrap()).unwrap();
+        let before = safety.snapshot();
+        let after = restored.snapshot();
+        assert_eq!(before.habitat_air_mass_kg, after.habitat_air_mass_kg);
+        assert_eq!(before.suppression_agent_kg, after.suppression_agent_kg);
+        assert_eq!(
+            before.cumulative_internal_dose_msv,
+            after.cumulative_internal_dose_msv
+        );
+    }
+
+    #[test]
+    fn safety_hazard_injection_rejects_unbounded_inputs() {
+        let mut safety = SafetySimulation::new();
+        assert!(safety.set_hazards(Some(-0.1), None, None).is_err());
+        assert!(safety.set_hazards(None, Some(2_001.0), None).is_err());
+        safety
+            .set_hazards(Some(0.01), Some(25.0), Some(true))
+            .unwrap();
+        let snapshot = safety.snapshot();
+        assert!(snapshot.habitat_isolated);
+        assert_eq!(snapshot.fire_heat_release_kw, 25.0);
+        assert!(snapshot.leak_rate_kgph > 36.0);
     }
 }

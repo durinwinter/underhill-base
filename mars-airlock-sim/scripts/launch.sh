@@ -18,6 +18,7 @@ PORT_OPCUA_SABATIER="${SABATIER_OPCUA_PORT:-4843}"
 PORT_OPCUA_POWERGRID="${POWERGRID_OPCUA_PORT:-4844}"
 PORT_OPCUA_THERMAL="${THERMAL_OPCUA_PORT:-4845}"
 PORT_OPCUA_WATER="${WATER_OPCUA_PORT:-4846}"
+PORT_OPCUA_SAFETY="${SAFETY_OPCUA_PORT:-4847}"
 NONINTERACTIVE="${AIRLOCK_NONINTERACTIVE:-0}"
 AUTO_KILL_PORT="${AIRLOCK_AUTO_KILL_PORT:-0}"
 BIND_IP="${AIRLOCK_BIND_IP:-}"
@@ -258,6 +259,7 @@ choose_bind_ip() {
   export POWERGRID_OPCUA_PORT="${POWERGRID_OPCUA_PORT:-$PORT_OPCUA_POWERGRID}"
   export THERMAL_OPCUA_PORT="${THERMAL_OPCUA_PORT:-$PORT_OPCUA_THERMAL}"
   export WATER_OPCUA_PORT="${WATER_OPCUA_PORT:-$PORT_OPCUA_WATER}"
+  export SAFETY_OPCUA_PORT="${SAFETY_OPCUA_PORT:-$PORT_OPCUA_SAFETY}"
   if [ -z "${AIRLOCK_OPCUA_BIND_HOST:-}" ]; then
     export AIRLOCK_OPCUA_BIND_HOST="0.0.0.0"
   fi
@@ -392,6 +394,7 @@ ensure_port_available "$PORT_OPCUA_SABATIER"
 ensure_port_available "$PORT_OPCUA_POWERGRID"
 ensure_port_available "$PORT_OPCUA_THERMAL"
 ensure_port_available "$PORT_OPCUA_WATER"
+ensure_port_available "$PORT_OPCUA_SAFETY"
 
 step "Starting stack"
 $COMPOSE_CMD up -d --build
@@ -412,5 +415,6 @@ log_ok "OPC UA Sabatier: opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_SABATIER}/
 log_ok "OPC UA PowerGrid: opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_POWERGRID}/underhill/power"
 log_ok "OPC UA Thermal:   opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_THERMAL}/underhill/thermal"
 log_ok "OPC UA Water:     opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_WATER}/underhill/water"
+log_ok "OPC UA Safety:    opc.tcp://${AIRLOCK_OPCUA_HOST}:${PORT_OPCUA_SAFETY}/underhill/safety"
 log_info "Use ./scripts/launch.sh logs"
 log_info "Use ./scripts/launch.sh down"

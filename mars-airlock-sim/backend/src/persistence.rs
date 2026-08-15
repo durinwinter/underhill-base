@@ -16,7 +16,8 @@ use crate::{
     plant_runtime::PlantSchedulerState,
     sim::Simulation,
     subsystems::{
-        EclssSimulation, PowerSimulation, SabatierSimulation, ThermalSimulation, WaterSimulation,
+        EclssSimulation, PowerSimulation, SabatierSimulation, SafetySimulation, ThermalSimulation,
+        WaterSimulation,
     },
 };
 
@@ -43,6 +44,8 @@ pub struct PlantCheckpoint {
     pub thermal: ThermalSimulation,
     #[serde(default = "WaterSimulation::new")]
     pub water: WaterSimulation,
+    #[serde(default = "SafetySimulation::new")]
+    pub safety: SafetySimulation,
     pub airlock_runtime: PeaRuntimeState,
     pub eclss_runtime: PeaRuntimeState,
     pub sabatier_runtime: PeaRuntimeState,
@@ -52,6 +55,8 @@ pub struct PlantCheckpoint {
     pub thermal_runtime: PeaRuntimeState,
     #[serde(default = "default_running_runtime")]
     pub water_runtime: PeaRuntimeState,
+    #[serde(default = "default_running_runtime")]
+    pub safety_runtime: PeaRuntimeState,
     pub eclss_operator_state: SubsystemOperatorState,
     pub sabatier_operator_state: SubsystemOperatorState,
     #[serde(default)]
@@ -60,6 +65,8 @@ pub struct PlantCheckpoint {
     pub thermal_operator_state: SubsystemOperatorState,
     #[serde(default)]
     pub water_operator_state: SubsystemOperatorState,
+    #[serde(default)]
+    pub safety_operator_state: SubsystemOperatorState,
 }
 
 impl PlantCheckpoint {
@@ -74,17 +81,20 @@ impl PlantCheckpoint {
         power: PowerSimulation,
         thermal: ThermalSimulation,
         water: WaterSimulation,
+        safety: SafetySimulation,
         airlock_runtime: PeaRuntimeState,
         eclss_runtime: PeaRuntimeState,
         sabatier_runtime: PeaRuntimeState,
         power_runtime: PeaRuntimeState,
         thermal_runtime: PeaRuntimeState,
         water_runtime: PeaRuntimeState,
+        safety_runtime: PeaRuntimeState,
         eclss_operator_state: SubsystemOperatorState,
         sabatier_operator_state: SubsystemOperatorState,
         power_operator_state: SubsystemOperatorState,
         thermal_operator_state: SubsystemOperatorState,
         water_operator_state: SubsystemOperatorState,
+        safety_operator_state: SubsystemOperatorState,
     ) -> Self {
         Self {
             schema_version: CHECKPOINT_SCHEMA_VERSION,
@@ -98,17 +108,20 @@ impl PlantCheckpoint {
             power,
             thermal,
             water,
+            safety,
             airlock_runtime,
             eclss_runtime,
             sabatier_runtime,
             power_runtime,
             thermal_runtime,
             water_runtime,
+            safety_runtime,
             eclss_operator_state,
             sabatier_operator_state,
             power_operator_state,
             thermal_operator_state,
             water_operator_state,
+            safety_operator_state,
         }
     }
 
@@ -502,6 +515,7 @@ mod tests {
             PowerSimulation::new(),
             ThermalSimulation::new(),
             WaterSimulation::new(),
+            SafetySimulation::new(),
             PeaRuntimeState {
                 deployed: true,
                 running: true,
@@ -532,6 +546,12 @@ mod tests {
                 running: true,
                 last_transition_ms: 6,
             },
+            PeaRuntimeState {
+                deployed: true,
+                running: true,
+                last_transition_ms: 7,
+            },
+            SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
             SubsystemOperatorState::default(),
