@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "dataset_id": "sacac-industrial-pid-repository",
+  "canonical_name": "SACAC Industrial PID Control Loop Data Repository",
+  "provenance_status": "source_verified",
+  "source": {
+    "publisher": "South African Council for Automation and Control",
+    "landing_page": "https://sacac.org.za/resources/",
+    "retrieved_at": "2026-08-14",
+    "checksum_sha256": null
+  },
+  "license": {
+    "status": "terms_not_yet_recorded",
+    "identifier": null,
+    "notes": "Repository and citation instructions are verified; record per-file terms and checksums before ingestion."
+  },
+  "underhill": {
+    "roles": ["root_cause_classifier_evaluation", "control_loop_health_validation"],
+    "target_peas": ["AIRLOCK-PEA-001", "ECLSS-PEA-001", "SABATIER-PEA-001", "POWER-PEA-001"],
+    "signals": [
+      {"source_signal": "OP", "underhill_tag": "ControlLoops/{loop}/ControllerOutput", "transform": "normalize_to_percent"},
+      {"source_signal": "PV", "underhill_tag": "ControlLoops/{loop}/ProcessVariable", "transform": "robust_scale_by_loop"},
+      {"source_signal": "SP", "underhill_tag": "ControlLoops/{loop}/Setpoint", "transform": "robust_scale_by_loop"},
+      {"source_signal": "repository category", "underhill_tag": "Validation/RootCause", "transform": "map_sacac_category_v1"}
+    ],
+    "domain_gaps": [
+      "repository categories are industrial diagnoses rather than Mars-base failure taxonomies",
+      "some root causes are only distinguishable with maintenance context absent from SISO trends",
+      "loop operating regimes must not be pooled without stratification"
+    ]
+  },
+  "partitions": [
+    {"name": "development", "purpose": "develop features and thresholds", "selector": "stable_hash(dataset_name) modulo 5 in [0,1,2]"},
+    {"name": "validation", "purpose": "held-out cross-loop root-cause scoring", "selector": "stable_hash(dataset_name) modulo 5 in [3,4]"}
+  ],
+  "acceptance_metrics": [
+    {"name": "root_cause_macro_f1", "direction": "min", "threshold": 0.75, "unit": "ratio"},
+    {"name": "unknown_or_abstain_precision", "direction": "min", "threshold": 0.9, "unit": "ratio"},
+    {"name": "unsafe_recommendation_rate", "direction": "max", "threshold": 0.0, "unit": "ratio"}
+  ],
+  "prohibited_claims": [
+    "SACAC categories exhaust all Underhill control-loop faults",
+    "classification alone authorizes a safety-critical control action"
+  ]
+}

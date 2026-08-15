@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "dataset_id": "damadics-actuator-benchmark",
+  "canonical_name": "DAMADICS Actuator Benchmark",
+  "provenance_status": "source_supplied",
+  "source": {
+    "publisher": "Warsaw University of Technology, Institute of Automatic Control and Robotics",
+    "landing_page": "https://iair.mchtr.pw.edu.pl/Damadics",
+    "retrieved_at": null,
+    "checksum_sha256": null
+  },
+  "license": {
+    "status": "verification_required_before_download",
+    "identifier": null,
+    "notes": "Do not redistribute raw files until the publisher's current terms are recorded."
+  },
+  "underhill": {
+    "roles": ["fault_signature_calibration", "held_out_diagnostic_validation"],
+    "target_peas": ["AIRLOCK-PEA-001", "ECLSS-PEA-001"],
+    "signals": [
+      {"source_signal": "controller output", "underhill_tag": "Valves/{valve}/CommandedPositionPct", "transform": "normalize_to_percent"},
+      {"source_signal": "valve position", "underhill_tag": "Valves/{valve}/TruePositionPct", "transform": "normalize_to_percent"},
+      {"source_signal": "process flow", "underhill_tag": "Valves/{valve}/MassFlow", "transform": "zscore_within_operating_regime"},
+      {"source_signal": "fault label", "underhill_tag": "Validation/FaultClass", "transform": "map_damadics_fault_taxonomy_v1"}
+    ],
+    "domain_gaps": [
+      "chemical-process fluid properties differ from Mars-base gases and reclaimed water",
+      "actuator hardware and pressure envelope require explicit scaling",
+      "qualitative fault signatures do not establish Mars hardware failure rates"
+    ]
+  },
+  "partitions": [
+    {"name": "calibration", "purpose": "fit non-ideal actuator profile parameters", "selector": "stable_hash(run_id) modulo 5 in [0,1,2]"},
+    {"name": "validation", "purpose": "held-out model and diagnostic scoring", "selector": "stable_hash(run_id) modulo 5 in [3,4]"}
+  ],
+  "acceptance_metrics": [
+    {"name": "fault_class_macro_f1", "direction": "min", "threshold": 0.8, "unit": "ratio"},
+    {"name": "normalized_response_shape_error", "direction": "max", "threshold": 0.2, "unit": "nrmse"},
+    {"name": "false_trip_rate", "direction": "max", "threshold": 0.01, "unit": "trips_per_nominal_run"}
+  ],
+  "prohibited_claims": [
+    "DAMADICS directly represents Mars atmosphere valves",
+    "dataset frequencies are Underhill component failure probabilities"
+  ]
+}

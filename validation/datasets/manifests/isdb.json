@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "dataset_id": "international-stiction-database",
+  "canonical_name": "International Stiction Data Base (ISDB)",
+  "provenance_status": "source_verified",
+  "source": {
+    "publisher": "University of Alberta Process and Control Systems Group",
+    "landing_page": "https://sites.ualberta.ca/~bhuang/Stiction-Book.htm",
+    "retrieved_at": "2026-08-14",
+    "checksum_sha256": null
+  },
+  "license": {
+    "status": "terms_not_yet_recorded",
+    "identifier": null,
+    "notes": "Landing-page provenance is verified; file-level license and checksums remain a download gate."
+  },
+  "underhill": {
+    "roles": ["stiction_profile_calibration", "held_out_stiction_detection"],
+    "target_peas": ["AIRLOCK-PEA-001", "ECLSS-PEA-001", "SABATIER-PEA-001"],
+    "signals": [
+      {"source_signal": "OP", "underhill_tag": "Valves/{valve}/CommandedPositionPct", "transform": "normalize_to_percent"},
+      {"source_signal": "PV", "underhill_tag": "Valves/{valve}/ObservedProcessVariable", "transform": "robust_scale_by_loop"},
+      {"source_signal": "SP", "underhill_tag": "Valves/{valve}/ProcessSetpoint", "transform": "robust_scale_by_loop"},
+      {"source_signal": "stiction classification", "underhill_tag": "Validation/StictionPresent", "transform": "map_to_boolean_with_source_confidence"}
+    ],
+    "domain_gaps": [
+      "many loops lack direct stem-position measurement",
+      "industrial process dynamics differ from pressure equalization and ECLSS loops",
+      "sampling intervals and loop types must be preserved per record"
+    ]
+  },
+  "partitions": [
+    {"name": "calibration", "purpose": "fit deadband and breakaway profile families", "selector": "stable_hash(loop_id) modulo 4 in [0,1]"},
+    {"name": "validation", "purpose": "held-out loop-level detection scoring", "selector": "stable_hash(loop_id) modulo 4 in [2,3]"}
+  ],
+  "acceptance_metrics": [
+    {"name": "stiction_detection_f1", "direction": "min", "threshold": 0.85, "unit": "ratio"},
+    {"name": "nominal_false_positive_rate", "direction": "max", "threshold": 0.05, "unit": "ratio"},
+    {"name": "detection_latency", "direction": "max", "threshold": 3.0, "unit": "loop_periods"}
+  ],
+  "prohibited_claims": [
+    "ISDB loop labels identify the exact Underhill mechanical root cause",
+    "normalized ISDB amplitudes define physical valve travel or pressure"
+  ]
+}

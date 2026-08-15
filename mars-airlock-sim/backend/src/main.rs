@@ -1,3 +1,4 @@
+mod dataset_manifest;
 mod model;
 mod mqtt_uns;
 mod opcua;
