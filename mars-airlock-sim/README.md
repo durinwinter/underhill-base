@@ -97,6 +97,8 @@ Compose mounts `backend/data`, so container replacement does not discard the rep
 On canonical restart, elapsed wall time since the checkpoint is queued as deterministic fixed-step
 catch-up work. Catch-up is bounded and visible through `/api/health`; an excessive gap stops startup
 instead of silently inventing history. Setting the policy to `freeze` is an explicit fork behavior.
+SIGINT and SIGTERM coordinate HTTP shutdown with the plant scheduler and force a synced final
+checkpoint plus a `shutdown_checkpoint_saved` journal record before the backend exits.
 
 When Zenoh and/or MQTT are configured, the backend publishes:
 - `murph/habitat/nodes/{node_id}/pea/{pea_id}/announce`

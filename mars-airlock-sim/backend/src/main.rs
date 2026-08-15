@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
     net::TcpListener,
-    sync::{RwLock, broadcast},
+    sync::{RwLock, broadcast, watch},
     time,
 };
 use tower_http::{
@@ -422,7 +422,8 @@ async fn main() -> anyhow::Result<()> {
         next_client_id: Arc::new(AtomicU64::new(1)),
     };
 
-    spawn_simulation_task(context.clone(), plant_scheduler);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let simulation_task = spawn_simulation_task(context.clone(), plant_scheduler, shutdown_rx);
 
     let frontend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../frontend");
     let index_file = frontend_dir.join("index.html");
@@ -528,16 +529,27 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(bind_addr).await?;
     info!("Mars airlock backend running on http://{}", bind_addr);
-    axum::serve(
+    let signal_shutdown_tx = shutdown_tx.clone();
+    let server_result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
+    .with_graceful_shutdown(shutdown_signal(signal_shutdown_tx))
+    .await;
+    let _ = shutdown_tx.send(true);
+    simulation_task
+        .await
+        .map_err(|err| anyhow::anyhow!("plant scheduler task failed: {err}"))??;
+    server_result?;
 
     Ok(())
 }
 
-fn spawn_simulation_task(context: AppContext, mut scheduler: PlantScheduler) {
+fn spawn_simulation_task(
+    context: AppContext,
+    mut scheduler: PlantScheduler,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<anyhow::Result<()>> {
     tokio::spawn(async move {
         let mut ticker = time::interval(scheduler.wall_tick_duration());
         let mut publish_divider: u64 = 0;
@@ -549,7 +561,25 @@ fn spawn_simulation_task(context: AppContext, mut scheduler: PlantScheduler) {
         );
 
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = ticker.tick() => {}
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        save_plant_checkpoint(
+                            &context,
+                            scheduler.state(),
+                            "shutdown_checkpoint_saved",
+                        )
+                        .await?;
+                        info!(
+                            "Saved final plant checkpoint at simulated second {}",
+                            scheduler.snapshot().plant_elapsed_sec
+                        );
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
             let steps_due = scheduler.begin_wall_tick();
             if steps_due == 0 {
                 *context.plant_runtime.write().await = scheduler.snapshot();
@@ -598,22 +628,10 @@ fn spawn_simulation_task(context: AppContext, mut scheduler: PlantScheduler) {
 
             *context.plant_runtime.write().await = scheduler.snapshot();
             if scheduler.snapshot().plant_elapsed_sec >= next_checkpoint_sec {
-                let checkpoint = capture_plant_checkpoint(&context, scheduler.state()).await;
-                match context.plant_persistence.save_checkpoint(&checkpoint) {
-                    Ok(()) => {
-                        if let Err(err) = context.plant_persistence.append_journal(
-                            checkpoint.scheduler.plant_elapsed_sec,
-                            "checkpoint_saved",
-                            context.plant_persistence.plant_id(),
-                            json!({
-                                "step_index": checkpoint.scheduler.step_index,
-                                "saved_wall_time_ms": checkpoint.saved_wall_time_ms
-                            }),
-                        ) {
-                            error!("Failed to journal checkpoint: {err:#}");
-                        }
-                    }
-                    Err(err) => error!("Failed to save plant checkpoint: {err:#}"),
+                if let Err(err) =
+                    save_plant_checkpoint(&context, scheduler.state(), "checkpoint_saved").await
+                {
+                    error!("Failed to save plant checkpoint: {err:#}");
                 }
                 next_checkpoint_sec = next_checkpoint_boundary(
                     scheduler.snapshot().plant_elapsed_sec,
@@ -716,11 +734,42 @@ fn spawn_simulation_task(context: AppContext, mut scheduler: PlantScheduler) {
                 .await;
             }
         }
-    });
+    })
 }
 
 fn next_checkpoint_boundary(elapsed_sec: f64, interval_sec: f64) -> f64 {
     ((elapsed_sec / interval_sec).floor() + 1.0) * interval_sec
+}
+
+async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(signal) => signal,
+                Err(err) => {
+                    error!("Failed to install SIGTERM handler: {err}");
+                    let _ = tokio::signal::ctrl_c().await;
+                    let _ = shutdown_tx.send(true);
+                    return;
+                }
+            };
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(err) = result {
+                    error!("Ctrl-C signal handler failed: {err}");
+                }
+            }
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        error!("Ctrl-C signal handler failed: {err}");
+    }
+
+    let _ = shutdown_tx.send(true);
 }
 
 async fn capture_plant_checkpoint(
@@ -739,6 +788,31 @@ async fn capture_plant_checkpoint(
         context.eclss_operator_state.read().await.clone(),
         context.sabatier_operator_state.read().await.clone(),
     )
+}
+
+async fn save_plant_checkpoint(
+    context: &AppContext,
+    scheduler: PlantSchedulerState,
+    journal_kind: &'static str,
+) -> anyhow::Result<()> {
+    let checkpoint = capture_plant_checkpoint(context, scheduler).await;
+    let persistence = context.plant_persistence.clone();
+    tokio::task::spawn_blocking(move || {
+        persistence.save_checkpoint(&checkpoint)?;
+        persistence.append_journal(
+            checkpoint.scheduler.plant_elapsed_sec,
+            journal_kind,
+            persistence.plant_id(),
+            json!({
+                "step_index": checkpoint.scheduler.step_index,
+                "saved_wall_time_ms": checkpoint.saved_wall_time_ms
+            }),
+        )?;
+        anyhow::Ok(())
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("checkpoint writer task failed: {err}"))??;
+    Ok(())
 }
 
 async fn journal_operation(
