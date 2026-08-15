@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod dataset_manifest;
 mod model;
 mod mqtt_uns;
@@ -8,6 +9,7 @@ mod persistence;
 mod plant_runtime;
 mod sim;
 mod subsystems;
+mod tag_catalog;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -59,6 +61,7 @@ use crate::subsystems::{
     EclssSimulation, EclssSnapshot, PowerSimulation, PowerSnapshot, SabatierSimulation,
     SabatierSnapshot,
 };
+use crate::tag_catalog::{CanonicalTag, TagCatalog};
 
 const DEFAULT_NODE_ID: &str = "local";
 const DEFAULT_AIRLOCK_PEA_ID: &str = "AIRLOCK-PEA-001";
@@ -138,6 +141,7 @@ struct AppContext {
     plant_transaction: Arc<Mutex<()>>,
     opcua_control: opcua::OpcuaControl,
     next_client_id: Arc<AtomicU64>,
+    tag_catalog: Arc<TagCatalog>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -191,6 +195,26 @@ struct SubsystemOperatorStateUpdateRequest {
     command_en_reason: Option<String>,
     operator_control_enabled: Option<bool>,
     remote_control_enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TelemetryCatalogQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    subsystem_family: Option<String>,
+    owner_pea: Option<String>,
+    publication_class: Option<String>,
+    activation_state: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TelemetryCatalogPage {
+    schema_version: u32,
+    total_matching: usize,
+    offset: usize,
+    limit: usize,
+    next_offset: Option<usize>,
+    items: Vec<CanonicalTag>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -425,6 +449,15 @@ async fn main() -> anyhow::Result<()> {
     let eclss_sim = Arc::new(RwLock::new(eclss_state));
     let sabatier_sim = Arc::new(RwLock::new(sabatier_state));
     let power_sim = Arc::new(RwLock::new(power_state));
+    let tag_catalog = Arc::new(TagCatalog::full_base());
+    tag_catalog
+        .validate()
+        .map_err(|error| anyhow::anyhow!("invalid canonical telemetry catalog: {error}"))?;
+    info!(
+        "Canonical telemetry catalog ready: {} tags, {:.1} nominal publications/s",
+        tag_catalog.stats().canonical_tags,
+        tag_catalog.stats().nominal_publications_per_second
+    );
     let pea_opcua_endpoints = Arc::new(HashMap::from([
         (
             DEFAULT_AIRLOCK_PEA_ID.to_string(),
@@ -499,6 +532,7 @@ async fn main() -> anyhow::Result<()> {
         plant_transaction,
         opcua_control,
         next_client_id: Arc::new(AtomicU64::new(1)),
+        tag_catalog,
     };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -511,6 +545,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(api_health))
         .route("/api/snapshot", get(api_snapshot))
         .route("/api/v1/power/snapshot", get(api_power_snapshot))
+        .route("/api/v1/telemetry/catalog", get(api_telemetry_catalog))
+        .route("/api/v1/telemetry/stats", get(api_telemetry_stats))
         .route("/api/events", get(api_events))
         .route("/api/mtp/tree", get(api_mtp_tree))
         .route("/api/v1/pea", get(api_v1_list_peas))
@@ -1004,8 +1040,58 @@ async fn api_health(State(context): State<AppContext>) -> impl IntoResponse {
             "plant_id": context.plant_persistence.plant_id(),
             "checkpoint_interval_sec": context.plant_persistence.checkpoint_interval_sec(),
             "journal_sequence": journal_sequence
-        }
+        },
+        "telemetry_catalog": context.tag_catalog.stats()
     }))
+}
+
+async fn api_telemetry_stats(State(context): State<AppContext>) -> impl IntoResponse {
+    axum::Json(context.tag_catalog.stats().clone())
+}
+
+async fn api_telemetry_catalog(
+    Query(query): Query<TelemetryCatalogQuery>,
+    State(context): State<AppContext>,
+) -> impl IntoResponse {
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(250).clamp(1, 5_000);
+    let matches = |tag: &&CanonicalTag| {
+        query
+            .subsystem_family
+            .as_ref()
+            .is_none_or(|value| tag.subsystem_family.eq_ignore_ascii_case(value.trim()))
+            && query
+                .owner_pea
+                .as_ref()
+                .is_none_or(|value| tag.owner_pea.eq_ignore_ascii_case(value.trim()))
+            && query
+                .publication_class
+                .as_ref()
+                .is_none_or(|value| tag.publication_class.eq_ignore_ascii_case(value.trim()))
+            && query
+                .activation_state
+                .as_ref()
+                .is_none_or(|value| tag.activation_state.eq_ignore_ascii_case(value.trim()))
+    };
+    let total_matching = context.tag_catalog.tags().iter().filter(&matches).count();
+    let items = context
+        .tag_catalog
+        .tags()
+        .iter()
+        .filter(matches)
+        .skip(offset)
+        .take(limit)
+        .cloned()
+        .collect();
+    let next_offset = (offset + limit < total_matching).then_some(offset + limit);
+    axum::Json(TelemetryCatalogPage {
+        schema_version: context.tag_catalog.stats().schema_version,
+        total_matching,
+        offset,
+        limit,
+        next_offset,
+        items,
+    })
 }
 
 async fn api_snapshot(State(context): State<AppContext>) -> impl IntoResponse {

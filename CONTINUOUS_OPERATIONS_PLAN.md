@@ -260,6 +260,8 @@ The fully formed target is budgeted across subsystem families as follows. These 
 | Cross-plant diagnostics and conservation | 8,000 | mass/energy ledgers, sensor residuals, KPIs, forecasts and model confidence |
 | **Total planning envelope** | **110,000** | adjustable as PEA designs become concrete |
 
+Implementation status: schema version 1 of this 110,000-tag catalog is now generated and validated at backend startup. Stable tag IDs and complete metadata are discoverable through paginated HTTP APIs, and capacity statistics distinguish the roughly 39,089 nominal publications per second from the 1.1 million samples per second implied by a naive all-tags-at-10-Hz design. Catalog presence is not counted as physics-backed activation; each PEA must still bind its definitions to conserved state, sensors, quality evolution, commands, and alarms before those tags are credited as live measurements.
+
 At 110,000 tags, naive 10 Hz publication would produce 1.1 million samples per second and is neither realistic nor useful. The catalog assigns each tag an internal integration cadence, sensing cadence, publication class, deadband, event behavior, and retention policy. Fast protection and control values may run at 20-100 Hz internally; ordinary SCADA values commonly publish at 1 Hz or on change; inventory, wear, and forecast values publish much more slowly. WinCC OA receives operationally meaningful tags while high-rate component truth and waveforms can remain in specialized streams or validation forks.
 
 Publication cadence is tag-specific. Fast internal integration never requires broadcasting every tag at the same rate.
