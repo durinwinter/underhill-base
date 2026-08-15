@@ -8,7 +8,7 @@ Standalone Underhill Base simulator with:
 - Deterministic fast/medium/slow scheduler boundaries for continuous subsystem evolution
 - Writable request-variable command model with `Operator` and `Remote` channels
 - Staged subsystem writeback model for POL-driven `ECLSS` and `Sabatier` commands
-- MTP-aligned runtime model for five PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`)
+- MTP-aligned runtime model for six PEAs (`Airlock`, `ECLSS`, `Sabatier`, `Power`, `Thermal`, `Water`)
 - Native OPC UA servers via Rust crate `async-opcua` (one endpoint per PEA)
 - UNS publishing over Zenoh and/or MQTT
 - i3X-compatible HTTP API (`/api/v1/*`)
@@ -21,6 +21,7 @@ Standalone Underhill Base simulator with:
   - `SABATIER-PEA-001` (CO2 methanation dynamics: CH4/H2O production, reactor telemetry)
   - `POWER-PEA-001` (islanded DC microgrid: solar/fission generation, battery, bus, load shedding)
   - `THERMAL-PEA-001` (conserved habitat heat, coolant loop, radiator rejection, thermal alarms)
+  - `WATER-PEA-001` (conserved potable/waste/brine stocks, recovery, quality, demand, and alarms)
 
 ## Runtime Features Implemented
 
@@ -64,6 +65,7 @@ Optional OPC UA env:
 - `SABATIER_OPCUA_PORT` (optional explicit port override for Sabatier PEA)
 - `POWERGRID_OPCUA_PORT` (optional explicit port override for Power PEA)
 - `THERMAL_OPCUA_PORT` (optional explicit port override for Thermal PEA)
+- `WATER_OPCUA_PORT` (optional explicit port override for Water PEA)
 - `AIRLOCK_OPCUA_ENDPOINT_PATH` (default `/underhill/airlock`)
 - `UNDERHILL_OPCUA_PORT_RANGE` (default `4841-4899`)
 - `UNDERHILL_OPCUA_PORT_ALLOCATIONS_FILE` (default `backend/data/opcua_port_allocations.json`)
@@ -94,7 +96,7 @@ Continuous runtime env:
 The physics integrator always advances in deterministic 50 ms steps. Acceleration executes more
 fixed steps per host tick rather than increasing the physical step size. `GET /api/health` exposes
 plant elapsed time, Mars sol, time scale, step index, catch-up backlog, and persistence settings.
-The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, Thermal, PEA runtime, operator,
+The backend atomically checkpoints the complete Airlock, ECLSS, Sabatier, Power, Thermal, Water, PEA runtime, operator,
 and scheduler state, retains the preceding checkpoint as a recovery fallback, and restores the
 same plant identity on restart. Lifecycle records are appended to `plant-events.ndjson`. Docker
 Compose mounts `backend/data`, so container replacement does not discard the represented plant.
@@ -124,6 +126,15 @@ and heater demand back into the Power PEA, and maintains an explicit sensible-en
 Stopping cooling leaves passive rejection only and can produce a persistent habitat overheat;
 thermal energy, integrals, lifecycle state, and alarms survive canonical restarts.
 
+The Water PEA closes a mass ledger across potable, wastewater, brine, and explicitly tracked
+discharge inventories. Crew demand transfers potable water into wastewater; treatment returns a
+power-dependent recovered fraction and produces brine; Sabatier product water and the current
+ECLSS condensate estimate enter as declared boundary flows. Conductivity, total organic carbon,
+microbial loading, shortage, storage, and treatment-availability alarms evolve continuously.
+Inventories, quality state, cumulative integrals, and lifecycle state survive canonical restarts.
+The ECLSS condensate term remains an estimated boundary until atmosphere moisture itself is a
+conserved stock, so it is not represented as direct flight-hardware calibration.
+
 The versioned canonical telemetry catalog defines the fully formed base envelope before every
 physical subsystem is implemented. `GET /api/v1/telemetry/stats` reports 110,000 stable interface
 tags across 13 subsystem families; `GET /api/v1/telemetry/catalog` provides filtered pagination by
@@ -134,7 +145,7 @@ The catalog is a discoverable contract and capacity budget—not a claim that ev
 already backed by implemented dynamics. Activation maturity is tracked separately as PEAs
 graduate from planned definitions to sensed values.
 
-Seven initial ECLSS and Power definitions are explicitly marked `model_backed` and written at each
+Twelve initial ECLSS, Power, and Water definitions are explicitly marked `model_backed` and written at each
 simulated one-second boundary to `telemetry-history.ndjson`. Historian records contain monotonic
 durable sequence, stable tag ID, wall timestamp, continuous plant time, typed value, quality, and
 source-model identity. Startup recovers the bounded recent query window and continues the durable
@@ -173,6 +184,7 @@ Host URL:
 - `opc.tcp://127.0.0.1:${SABATIER_OPCUA_PORT:-4843}/underhill/sabatier`
 - `opc.tcp://127.0.0.1:${POWERGRID_OPCUA_PORT:-4844}/underhill/power`
 - `opc.tcp://127.0.0.1:${THERMAL_OPCUA_PORT:-4845}/underhill/thermal`
+- `opc.tcp://127.0.0.1:${WATER_OPCUA_PORT:-4846}/underhill/water`
 - i3X endpoints start at: `http://127.0.0.1:${AIRLOCK_HTTP_PORT:-8080}/api/v1/namespaces`
 
 Optional env file:
@@ -195,6 +207,7 @@ flatpak-spawn --host /usr/bin/env bash -lc 'cd "/home/earthling/Documents/Focus/
   - `opc.tcp://127.0.0.1:4843/underhill/sabatier`
   - `opc.tcp://127.0.0.1:4844/underhill/power`
   - `opc.tcp://127.0.0.1:4845/underhill/thermal`
+  - `opc.tcp://127.0.0.1:4846/underhill/water`
 - MQTT Explorer:
   - Set `UNS_MQTT_BROKER` (for example `mqtt://127.0.0.1:1883`)
   - Browse from topic root `murph/habitat/nodes/{node_id}/pea/`

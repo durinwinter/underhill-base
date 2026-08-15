@@ -13,6 +13,11 @@ const MODEL_BACKED_TAG_IDS: &[&str] = &[
     "underhill.v1.eclss.00000.alarm_active",
     "underhill.v1.power.00000.state_of_charge",
     "underhill.v1.power.00000.protection_state",
+    "underhill.v1.water_waste.00000.true_value",
+    "underhill.v1.water_waste.00000.residual",
+    "underhill.v1.water_waste.00000.alarm_active",
+    "underhill.v1.water_waste.00000.quality_code",
+    "underhill.v1.water_waste.00000.health_state",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -1017,8 +1022,8 @@ mod tests {
             catalog.stats.subsystem_counts["cross_plant_diagnostics"],
             8_000
         );
-        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_993);
-        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 7);
+        assert_eq!(catalog.stats.activation_state_counts["planned"], 109_988);
+        assert_eq!(catalog.stats.activation_state_counts["model_backed"], 12);
     }
 
     #[test]

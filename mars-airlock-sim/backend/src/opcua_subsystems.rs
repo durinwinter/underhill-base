@@ -15,7 +15,9 @@ use tracing::{error, info, warn};
 
 use crate::{
     PeaRuntimeState,
-    subsystems::{EclssSimulation, PowerSimulation, SabatierSimulation, ThermalSimulation},
+    subsystems::{
+        EclssSimulation, PowerSimulation, SabatierSimulation, ThermalSimulation, WaterSimulation,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -146,6 +148,34 @@ struct ThermalNodes {
     alarm_coolant_hot: NodeId,
 }
 
+#[derive(Clone)]
+struct WaterNodes {
+    endpoint_url: NodeId,
+    security_mode: NodeId,
+    service_state: NodeId,
+    deployed: NodeId,
+    running: NodeId,
+    potable_water_kg: NodeId,
+    wastewater_kg: NodeId,
+    brine_kg: NodeId,
+    crew_demand_kgph: NodeId,
+    unmet_crew_water_kgph: NodeId,
+    external_input_kgph: NodeId,
+    treatment_feed_kgph: NodeId,
+    reclaimed_water_kgph: NodeId,
+    recovery_efficiency_pct: NodeId,
+    conductivity_us_cm: NodeId,
+    toc_mg_l: NodeId,
+    microbial_cfu_ml: NodeId,
+    treatment_power_kw: NodeId,
+    balance_error_kgph: NodeId,
+    treatment_available: NodeId,
+    alarm_potable_low: NodeId,
+    alarm_wastewater_high: NodeId,
+    alarm_brine_high: NodeId,
+    alarm_water_quality: NodeId,
+}
+
 pub fn spawn_eclss_opcua_server(
     sim: Arc<RwLock<EclssSimulation>>,
     runtime: Arc<RwLock<PeaRuntimeState>>,
@@ -226,6 +256,27 @@ pub fn spawn_thermal_opcua_server(
     tokio::spawn(async move {
         if let Err(err) = run_thermal_opcua_server(sim, runtime, config).await {
             error!("Thermal OPC UA server exited with error: {err}");
+        }
+    });
+}
+
+pub fn spawn_water_opcua_server(
+    sim: Arc<RwLock<WaterSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    port: u16,
+    security_profile: String,
+) {
+    let config = SubsystemOpcuaConfig::new(
+        port,
+        "/underhill/water",
+        "./pki/water",
+        security_profile,
+        "Underhill Water OPC UA Server",
+        "urn:underhill:water:opcua-server",
+    );
+    tokio::spawn(async move {
+        if let Err(err) = run_water_opcua_server(sim, runtime, config).await {
+            error!("Water OPC UA server exited with error: {err}");
         }
     });
 }
@@ -658,6 +709,137 @@ async fn run_thermal_opcua_server(
                 values.into_iter().map(|(node, value)| (node, None, value)),
             ) {
                 warn!("Failed updating Thermal OPC UA values: {err}");
+            }
+        }
+    });
+    run_server(server, &config).await?;
+    handle.cancel();
+    let _ = sync_task.await;
+    Ok(())
+}
+
+async fn run_water_opcua_server(
+    sim: Arc<RwLock<WaterSimulation>>,
+    runtime: Arc<RwLock<PeaRuntimeState>>,
+    config: SubsystemOpcuaConfig,
+) -> anyhow::Result<()> {
+    let namespace_uri = "urn:underhill:water:mtp";
+    let (server, handle) = build_server(&config, namespace_uri)?;
+    let manager = handle
+        .node_managers()
+        .get_of_type::<SimpleNodeManager>()
+        .ok_or_else(|| anyhow::anyhow!("SimpleNodeManager not available for Water"))?;
+    let ns = handle
+        .get_namespace_index(namespace_uri)
+        .ok_or_else(|| anyhow::anyhow!("Namespace index unavailable for Water"))?;
+    let nodes = build_water_address_space(ns, &manager);
+    let subscriptions = handle.subscriptions().clone();
+    let server_handle = handle.clone();
+    let endpoint_url = config.endpoint_url();
+    let security_profile = config.security_profile.clone();
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        loop {
+            tokio::select! {
+                _ = server_handle.token().cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            let snapshot = sim.read().await.snapshot();
+            let runtime_state = *runtime.read().await;
+            let values = vec![
+                (
+                    &nodes.endpoint_url,
+                    DataValue::new_now(endpoint_url.clone()),
+                ),
+                (
+                    &nodes.security_mode,
+                    DataValue::new_now(security_profile.clone()),
+                ),
+                (
+                    &nodes.service_state,
+                    DataValue::new_now(state_for_runtime(runtime_state)),
+                ),
+                (&nodes.deployed, DataValue::new_now(runtime_state.deployed)),
+                (&nodes.running, DataValue::new_now(runtime_state.running)),
+                (
+                    &nodes.potable_water_kg,
+                    DataValue::new_now(snapshot.potable_water_kg),
+                ),
+                (
+                    &nodes.wastewater_kg,
+                    DataValue::new_now(snapshot.wastewater_kg),
+                ),
+                (&nodes.brine_kg, DataValue::new_now(snapshot.brine_kg)),
+                (
+                    &nodes.crew_demand_kgph,
+                    DataValue::new_now(snapshot.crew_demand_kgph),
+                ),
+                (
+                    &nodes.unmet_crew_water_kgph,
+                    DataValue::new_now(snapshot.unmet_crew_water_kgph),
+                ),
+                (
+                    &nodes.external_input_kgph,
+                    DataValue::new_now(snapshot.external_water_input_kgph),
+                ),
+                (
+                    &nodes.treatment_feed_kgph,
+                    DataValue::new_now(snapshot.treatment_feed_kgph),
+                ),
+                (
+                    &nodes.reclaimed_water_kgph,
+                    DataValue::new_now(snapshot.reclaimed_water_kgph),
+                ),
+                (
+                    &nodes.recovery_efficiency_pct,
+                    DataValue::new_now(snapshot.recovery_efficiency_pct),
+                ),
+                (
+                    &nodes.conductivity_us_cm,
+                    DataValue::new_now(snapshot.potable_conductivity_us_cm),
+                ),
+                (
+                    &nodes.toc_mg_l,
+                    DataValue::new_now(snapshot.potable_toc_mg_l),
+                ),
+                (
+                    &nodes.microbial_cfu_ml,
+                    DataValue::new_now(snapshot.microbial_cfu_ml),
+                ),
+                (
+                    &nodes.treatment_power_kw,
+                    DataValue::new_now(snapshot.treatment_power_kw),
+                ),
+                (
+                    &nodes.balance_error_kgph,
+                    DataValue::new_now(snapshot.instantaneous_balance_error_kgph),
+                ),
+                (
+                    &nodes.treatment_available,
+                    DataValue::new_now(snapshot.treatment_available),
+                ),
+                (
+                    &nodes.alarm_potable_low,
+                    DataValue::new_now(snapshot.alarm_potable_low),
+                ),
+                (
+                    &nodes.alarm_wastewater_high,
+                    DataValue::new_now(snapshot.alarm_wastewater_high),
+                ),
+                (
+                    &nodes.alarm_brine_high,
+                    DataValue::new_now(snapshot.alarm_brine_high),
+                ),
+                (
+                    &nodes.alarm_water_quality,
+                    DataValue::new_now(snapshot.alarm_water_quality),
+                ),
+            ];
+            if let Err(err) = manager.set_values(
+                &subscriptions,
+                values.into_iter().map(|(node, value)| (node, None, value)),
+            ) {
+                warn!("Failed updating Water OPC UA values: {err}");
             }
         }
     });
@@ -1501,6 +1683,182 @@ fn build_thermal_address_space(
         alarm_habitat_hot,
         alarm_habitat_cold,
         alarm_coolant_hot,
+    }
+}
+
+fn build_water_address_space(
+    ns: u16,
+    manager: &Arc<opcua::server::node_manager::memory::InMemoryNodeManager<SimpleNodeManagerImpl>>,
+) -> WaterNodes {
+    let underhill = NodeId::new(ns, "Underhill");
+    let pea = NodeId::new(ns, "Underhill.WaterPEA");
+    let diagnostics = NodeId::new(ns, "Underhill.WaterPEA.Diagnostics");
+    let services = NodeId::new(ns, "Underhill.WaterPEA.Services");
+    let service = NodeId::new(ns, "Underhill.WaterPEA.Services.WaterService");
+    let control = NodeId::new(
+        ns,
+        "Underhill.WaterPEA.Services.WaterService.ServiceControl",
+    );
+    let data = NodeId::new(ns, "Underhill.WaterPEA.DataAssemblies");
+    let inventories = NodeId::new(ns, "Underhill.WaterPEA.DataAssemblies.Inventories");
+    let process = NodeId::new(ns, "Underhill.WaterPEA.DataAssemblies.Process");
+    let quality = NodeId::new(ns, "Underhill.WaterPEA.DataAssemblies.Quality");
+    let alarms = NodeId::new(ns, "Underhill.WaterPEA.DataAssemblies.Alarms");
+    let mut space = manager.address_space().write();
+    space.add_folder(
+        &underhill,
+        "Underhill",
+        "Underhill",
+        &NodeId::objects_folder_id(),
+    );
+    space.add_folder(&pea, "WaterPEA", "WaterPEA", &underhill);
+    for (node, browse, parent) in [
+        (&diagnostics, "Diagnostics", &pea),
+        (&services, "Services", &pea),
+        (&service, "WaterService", &services),
+        (&control, "ServiceControl", &service),
+        (&data, "DataAssemblies", &pea),
+        (&inventories, "Inventories", &data),
+        (&process, "Process", &data),
+        (&quality, "Quality", &data),
+        (&alarms, "Alarms", &data),
+    ] {
+        space.add_folder(node, browse, browse, parent);
+    }
+    let node = |suffix: &str| NodeId::new(ns, format!("Underhill.WaterPEA.{suffix}"));
+    let endpoint_url = node("Diagnostics.EndpointUrl");
+    let security_mode = node("Diagnostics.SecurityMode");
+    let service_state = node("Services.WaterService.ServiceControl.State");
+    let deployed = node("Services.WaterService.ServiceControl.Deployed");
+    let running = node("Services.WaterService.ServiceControl.Running");
+    let potable_water_kg = node("DataAssemblies.Inventories.PotableWaterKg");
+    let wastewater_kg = node("DataAssemblies.Inventories.WastewaterKg");
+    let brine_kg = node("DataAssemblies.Inventories.BrineKg");
+    let crew_demand_kgph = node("DataAssemblies.Process.CrewDemandKgph");
+    let unmet_crew_water_kgph = node("DataAssemblies.Process.UnmetCrewWaterKgph");
+    let external_input_kgph = node("DataAssemblies.Process.ExternalInputKgph");
+    let treatment_feed_kgph = node("DataAssemblies.Process.TreatmentFeedKgph");
+    let reclaimed_water_kgph = node("DataAssemblies.Process.ReclaimedWaterKgph");
+    let recovery_efficiency_pct = node("DataAssemblies.Process.RecoveryEfficiencyPct");
+    let conductivity_us_cm = node("DataAssemblies.Quality.ConductivityUsCm");
+    let toc_mg_l = node("DataAssemblies.Quality.TocMgL");
+    let microbial_cfu_ml = node("DataAssemblies.Quality.MicrobialCfuMl");
+    let treatment_power_kw = node("DataAssemblies.Process.TreatmentPowerKw");
+    let balance_error_kgph = node("Diagnostics.InstantaneousBalanceErrorKgph");
+    let treatment_available = node("DataAssemblies.Alarms.TreatmentAvailable");
+    let alarm_potable_low = node("DataAssemblies.Alarms.PotableLow");
+    let alarm_wastewater_high = node("DataAssemblies.Alarms.WastewaterHigh");
+    let alarm_brine_high = node("DataAssemblies.Alarms.BrineHigh");
+    let alarm_water_quality = node("DataAssemblies.Alarms.WaterQuality");
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &endpoint_url,
+        "EndpointUrl",
+        "",
+        false,
+    );
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &security_mode,
+        "SecurityMode",
+        "NONE",
+        false,
+    );
+    insert_var(&mut space, &control, &service_state, "State", "Idle", false);
+    insert_var(&mut space, &control, &deployed, "Deployed", true, false);
+    insert_var(&mut space, &control, &running, "Running", true, false);
+    for (parent, id, browse) in [
+        (&inventories, &potable_water_kg, "PotableWaterKg"),
+        (&inventories, &wastewater_kg, "WastewaterKg"),
+        (&inventories, &brine_kg, "BrineKg"),
+        (&process, &crew_demand_kgph, "CrewDemandKgph"),
+        (&process, &unmet_crew_water_kgph, "UnmetCrewWaterKgph"),
+        (&process, &external_input_kgph, "ExternalInputKgph"),
+        (&process, &treatment_feed_kgph, "TreatmentFeedKgph"),
+        (&process, &reclaimed_water_kgph, "ReclaimedWaterKgph"),
+        (&process, &recovery_efficiency_pct, "RecoveryEfficiencyPct"),
+        (&quality, &conductivity_us_cm, "ConductivityUsCm"),
+        (&quality, &toc_mg_l, "TocMgL"),
+        (&quality, &microbial_cfu_ml, "MicrobialCfuMl"),
+        (&process, &treatment_power_kw, "TreatmentPowerKw"),
+    ] {
+        insert_var(&mut space, parent, id, browse, 0.0f64, false);
+    }
+    insert_var(
+        &mut space,
+        &diagnostics,
+        &balance_error_kgph,
+        "InstantaneousBalanceErrorKgph",
+        0.0f64,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &treatment_available,
+        "TreatmentAvailable",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_potable_low,
+        "PotableLow",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_wastewater_high,
+        "WastewaterHigh",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_brine_high,
+        "BrineHigh",
+        false,
+        false,
+    );
+    insert_var(
+        &mut space,
+        &alarms,
+        &alarm_water_quality,
+        "WaterQuality",
+        false,
+        false,
+    );
+    WaterNodes {
+        endpoint_url,
+        security_mode,
+        service_state,
+        deployed,
+        running,
+        potable_water_kg,
+        wastewater_kg,
+        brine_kg,
+        crew_demand_kgph,
+        unmet_crew_water_kgph,
+        external_input_kgph,
+        treatment_feed_kgph,
+        reclaimed_water_kgph,
+        recovery_efficiency_pct,
+        conductivity_us_cm,
+        toc_mg_l,
+        microbial_cfu_ml,
+        treatment_power_kw,
+        balance_error_kgph,
+        treatment_available,
+        alarm_potable_low,
+        alarm_wastewater_high,
+        alarm_brine_high,
+        alarm_water_quality,
     }
 }
 

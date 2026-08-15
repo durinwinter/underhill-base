@@ -86,6 +86,40 @@ pub struct ThermalSnapshot {
     pub cooling_available: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WaterSnapshot {
+    pub timestamp_ms: u64,
+    pub sim_time_sec: f64,
+    pub potable_water_kg: f64,
+    pub potable_capacity_kg: f64,
+    pub wastewater_kg: f64,
+    pub wastewater_capacity_kg: f64,
+    pub brine_kg: f64,
+    pub brine_capacity_kg: f64,
+    pub discharged_water_kg: f64,
+    pub crew_demand_kgph: f64,
+    pub crew_water_served_kgph: f64,
+    pub unmet_crew_water_kgph: f64,
+    pub external_water_input_kgph: f64,
+    pub treatment_feed_kgph: f64,
+    pub reclaimed_water_kgph: f64,
+    pub brine_production_kgph: f64,
+    pub recovery_efficiency_pct: f64,
+    pub potable_conductivity_us_cm: f64,
+    pub potable_toc_mg_l: f64,
+    pub microbial_cfu_ml: f64,
+    pub treatment_power_kw: f64,
+    pub cumulative_external_input_kg: f64,
+    pub cumulative_crew_consumption_kg: f64,
+    pub cumulative_reclaimed_kg: f64,
+    pub instantaneous_balance_error_kgph: f64,
+    pub treatment_available: bool,
+    pub alarm_potable_low: bool,
+    pub alarm_wastewater_high: bool,
+    pub alarm_brine_high: bool,
+    pub alarm_water_quality: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerSimulation {
     sim_time_sec: f64,
@@ -165,6 +199,7 @@ impl PowerSimulation {
         running: bool,
         eclss_load_kw: f64,
         thermal_load_kw: f64,
+        water_load_kw: f64,
         sabatier_load_kw: f64,
         airlock_load_kw: f64,
     ) -> PowerSnapshot {
@@ -186,8 +221,11 @@ impl PowerSimulation {
         };
         self.generation_kw = self.solar_available_kw + self.fission_available_kw;
 
-        self.critical_load_kw =
-            18.0 + eclss_load_kw.max(0.0) + thermal_load_kw.max(0.0) + airlock_load_kw.max(0.0);
+        self.critical_load_kw = 18.0
+            + eclss_load_kw.max(0.0)
+            + thermal_load_kw.max(0.0)
+            + water_load_kw.max(0.0)
+            + airlock_load_kw.max(0.0);
         self.flexible_load_kw = 8.0 + sabatier_load_kw.max(0.0);
         let battery_soc_pct = self.battery_soc_pct();
         self.load_shed_active = battery_soc_pct < 12.0 || self.bus_voltage_v < 360.0;
@@ -473,6 +511,231 @@ impl ThermalSimulation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaterSimulation {
+    sim_time_sec: f64,
+    potable_capacity_kg: f64,
+    wastewater_capacity_kg: f64,
+    brine_capacity_kg: f64,
+    potable_water_kg: f64,
+    wastewater_kg: f64,
+    brine_kg: f64,
+    discharged_water_kg: f64,
+    crew_count: u32,
+    crew_demand_kgph: f64,
+    crew_water_served_kgph: f64,
+    unmet_crew_water_kgph: f64,
+    external_water_input_kgph: f64,
+    treatment_feed_kgph: f64,
+    reclaimed_water_kgph: f64,
+    brine_production_kgph: f64,
+    recovery_efficiency_pct: f64,
+    potable_conductivity_us_cm: f64,
+    potable_toc_mg_l: f64,
+    microbial_cfu_ml: f64,
+    treatment_power_kw: f64,
+    cumulative_external_input_kg: f64,
+    cumulative_crew_consumption_kg: f64,
+    cumulative_reclaimed_kg: f64,
+    instantaneous_balance_error_kgph: f64,
+    treatment_available: bool,
+}
+
+impl WaterSimulation {
+    pub fn new() -> Self {
+        Self {
+            sim_time_sec: 0.0,
+            potable_capacity_kg: 3_000.0,
+            wastewater_capacity_kg: 1_500.0,
+            brine_capacity_kg: 600.0,
+            potable_water_kg: 2_400.0,
+            wastewater_kg: 400.0,
+            brine_kg: 50.0,
+            discharged_water_kg: 0.0,
+            crew_count: 4,
+            crew_demand_kgph: 0.60,
+            crew_water_served_kgph: 0.60,
+            unmet_crew_water_kgph: 0.0,
+            external_water_input_kgph: 0.0,
+            treatment_feed_kgph: 1.2,
+            reclaimed_water_kgph: 1.06,
+            brine_production_kgph: 0.14,
+            recovery_efficiency_pct: 88.0,
+            potable_conductivity_us_cm: 145.0,
+            potable_toc_mg_l: 0.35,
+            microbial_cfu_ml: 0.2,
+            treatment_power_kw: 4.5,
+            cumulative_external_input_kg: 0.0,
+            cumulative_crew_consumption_kg: 0.0,
+            cumulative_reclaimed_kg: 0.0,
+            instantaneous_balance_error_kgph: 0.0,
+            treatment_available: true,
+        }
+    }
+
+    pub fn step(
+        &mut self,
+        dt_sec: f64,
+        running: bool,
+        power_available: bool,
+        sabatier_water_kgph: f64,
+        eclss_condensate_kgph: f64,
+    ) -> WaterSnapshot {
+        self.sim_time_sec += dt_sec;
+        let dt_hours = dt_sec / 3_600.0;
+        let opening_total_kg = self.total_tracked_water_kg();
+        self.external_water_input_kgph =
+            sabatier_water_kgph.max(0.0) + eclss_condensate_kgph.max(0.0);
+        let external_input_kg = self.external_water_input_kgph * dt_hours;
+        self.wastewater_kg += external_input_kg;
+
+        self.crew_demand_kgph = self.crew_count as f64 * 0.15;
+        let available_draw_kgph = if dt_hours > 0.0 {
+            self.potable_water_kg / dt_hours
+        } else {
+            0.0
+        };
+        self.crew_water_served_kgph = self.crew_demand_kgph.min(available_draw_kgph);
+        self.unmet_crew_water_kgph = (self.crew_demand_kgph - self.crew_water_served_kgph).max(0.0);
+        let crew_transfer_kg = self.crew_water_served_kgph * dt_hours;
+        self.potable_water_kg -= crew_transfer_kg;
+        self.wastewater_kg += crew_transfer_kg;
+
+        self.treatment_available = running && power_available;
+        let max_feed_kgph = if dt_hours > 0.0 {
+            self.wastewater_kg / dt_hours
+        } else {
+            0.0
+        };
+        let target_feed_kgph: f64 = if self.treatment_available { 1.4 } else { 0.0 };
+        self.treatment_feed_kgph = first_order(
+            self.treatment_feed_kgph,
+            target_feed_kgph.min(max_feed_kgph),
+            0.22,
+            dt_sec,
+        )
+        .min(max_feed_kgph);
+        let treatment_feed_kg = self.treatment_feed_kgph * dt_hours;
+        self.wastewater_kg -= treatment_feed_kg;
+        self.recovery_efficiency_pct = if self.treatment_available {
+            (90.0 - self.brine_kg / self.brine_capacity_kg * 4.0).clamp(82.0, 90.0)
+        } else {
+            0.0
+        };
+        self.reclaimed_water_kgph = self.treatment_feed_kgph * self.recovery_efficiency_pct / 100.0;
+        self.brine_production_kgph = self.treatment_feed_kgph - self.reclaimed_water_kgph;
+        let reclaimed_kg = self.reclaimed_water_kgph * dt_hours;
+        let brine_kg = self.brine_production_kgph * dt_hours;
+        self.potable_water_kg += reclaimed_kg;
+        self.brine_kg += brine_kg;
+
+        if self.potable_water_kg > self.potable_capacity_kg {
+            self.discharged_water_kg += self.potable_water_kg - self.potable_capacity_kg;
+            self.potable_water_kg = self.potable_capacity_kg;
+        }
+        if self.wastewater_kg > self.wastewater_capacity_kg {
+            self.discharged_water_kg += self.wastewater_kg - self.wastewater_capacity_kg;
+            self.wastewater_kg = self.wastewater_capacity_kg;
+        }
+        if self.brine_kg > self.brine_capacity_kg {
+            self.discharged_water_kg += self.brine_kg - self.brine_capacity_kg;
+            self.brine_kg = self.brine_capacity_kg;
+        }
+
+        let circulation_factor = if self.treatment_available { 1.0 } else { 0.0 };
+        self.potable_conductivity_us_cm = first_order(
+            self.potable_conductivity_us_cm,
+            if self.treatment_available {
+                145.0
+            } else {
+                620.0
+            },
+            0.00008 + 0.025 * circulation_factor,
+            dt_sec,
+        );
+        self.potable_toc_mg_l = first_order(
+            self.potable_toc_mg_l,
+            if self.treatment_available { 0.35 } else { 4.5 },
+            0.00005 + 0.018 * circulation_factor,
+            dt_sec,
+        );
+        self.microbial_cfu_ml = first_order(
+            self.microbial_cfu_ml,
+            if self.treatment_available { 0.2 } else { 250.0 },
+            0.00004 + 0.02 * circulation_factor,
+            dt_sec,
+        );
+        self.treatment_power_kw = if self.treatment_available {
+            2.4 + self.treatment_feed_kgph * 1.8
+        } else {
+            0.15
+        };
+
+        self.cumulative_external_input_kg += external_input_kg;
+        self.cumulative_crew_consumption_kg += crew_transfer_kg;
+        self.cumulative_reclaimed_kg += reclaimed_kg;
+        let closing_total_kg = self.total_tracked_water_kg();
+        self.instantaneous_balance_error_kgph = if dt_hours > 0.0 {
+            (opening_total_kg + external_input_kg - closing_total_kg) / dt_hours
+        } else {
+            0.0
+        };
+        self.snapshot()
+    }
+
+    pub fn snapshot(&self) -> WaterSnapshot {
+        WaterSnapshot {
+            timestamp_ms: now_ms(),
+            sim_time_sec: self.sim_time_sec,
+            potable_water_kg: self.potable_water_kg,
+            potable_capacity_kg: self.potable_capacity_kg,
+            wastewater_kg: self.wastewater_kg,
+            wastewater_capacity_kg: self.wastewater_capacity_kg,
+            brine_kg: self.brine_kg,
+            brine_capacity_kg: self.brine_capacity_kg,
+            discharged_water_kg: self.discharged_water_kg,
+            crew_demand_kgph: self.crew_demand_kgph,
+            crew_water_served_kgph: self.crew_water_served_kgph,
+            unmet_crew_water_kgph: self.unmet_crew_water_kgph,
+            external_water_input_kgph: self.external_water_input_kgph,
+            treatment_feed_kgph: self.treatment_feed_kgph,
+            reclaimed_water_kgph: self.reclaimed_water_kgph,
+            brine_production_kgph: self.brine_production_kgph,
+            recovery_efficiency_pct: self.recovery_efficiency_pct,
+            potable_conductivity_us_cm: self.potable_conductivity_us_cm,
+            potable_toc_mg_l: self.potable_toc_mg_l,
+            microbial_cfu_ml: self.microbial_cfu_ml,
+            treatment_power_kw: self.treatment_power_kw,
+            cumulative_external_input_kg: self.cumulative_external_input_kg,
+            cumulative_crew_consumption_kg: self.cumulative_crew_consumption_kg,
+            cumulative_reclaimed_kg: self.cumulative_reclaimed_kg,
+            instantaneous_balance_error_kgph: self.instantaneous_balance_error_kgph,
+            treatment_available: self.treatment_available,
+            alarm_potable_low: self.potable_water_kg < self.potable_capacity_kg * 0.20,
+            alarm_wastewater_high: self.wastewater_kg > self.wastewater_capacity_kg * 0.85,
+            alarm_brine_high: self.brine_kg > self.brine_capacity_kg * 0.85,
+            alarm_water_quality: self.potable_conductivity_us_cm > 500.0
+                || self.potable_toc_mg_l > 2.0
+                || self.microbial_cfu_ml > 100.0,
+        }
+    }
+
+    pub fn mtp_nodes(&self) -> Vec<String> {
+        vec![
+            "ServiceSet/WaterService/ServiceInformation".to_string(),
+            "ServiceSet/WaterService/Modes".to_string(),
+            "ServiceSet/WaterService/StateMachine".to_string(),
+            "ServiceSet/WaterService/DataAssemblies/Inventories".to_string(),
+            "ServiceSet/WaterService/DataAssemblies/Quality".to_string(),
+            "ServiceSet/WaterService/DataAssemblies/Alarms".to_string(),
+        ]
+    }
+
+    fn total_tracked_water_kg(&self) -> f64 {
+        self.potable_water_kg + self.wastewater_kg + self.brine_kg + self.discharged_water_kg
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EclssSimulation {
     cabin_pressure_kpa: f64,
     o2_percent: f64,
@@ -690,7 +953,7 @@ mod tests {
     fn power_balance_closes_each_step() {
         let mut power = PowerSimulation::new();
         for _ in 0..10_000 {
-            let snapshot = power.step(0.05, true, 12.0, 4.0, 5.0, 2.0);
+            let snapshot = power.step(0.05, true, 12.0, 4.0, 4.5, 5.0, 2.0);
             assert!(snapshot.instantaneous_balance_error_kw.abs() < 1.0e-9);
             assert!(snapshot.battery_energy_kwh >= 0.0);
             assert!(snapshot.battery_energy_kwh <= 500.0);
@@ -702,7 +965,7 @@ mod tests {
         let mut power = PowerSimulation::new();
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         let opening_energy = power.battery_energy_kwh;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 5.0, 2.0);
         assert_eq!(snapshot.solar_available_kw, 0.0);
         assert!(snapshot.battery_power_kw < 0.0);
         assert!(snapshot.battery_energy_kwh < opening_energy);
@@ -715,7 +978,7 @@ mod tests {
         power.sim_time_sec = MARS_SOL_SEC * 0.5;
         power.fission_capacity_kw = 0.0;
         power.battery_energy_kwh = 0.0;
-        let snapshot = power.step(60.0, true, 12.0, 4.0, 5.0, 2.0);
+        let snapshot = power.step(60.0, true, 12.0, 4.0, 4.5, 5.0, 2.0);
         assert!(snapshot.load_shed_active);
         assert_eq!(snapshot.flexible_load_kw, 13.0);
         assert_eq!(snapshot.requested_load_kw, snapshot.critical_load_kw);
@@ -729,7 +992,7 @@ mod tests {
     fn power_state_round_trip_preserves_energy_and_integrals() {
         let mut power = PowerSimulation::new();
         for _ in 0..100 {
-            power.step(1.0, true, 11.0, 4.0, 4.0, 1.0);
+            power.step(1.0, true, 11.0, 4.0, 4.5, 4.0, 1.0);
         }
         let restored: PowerSimulation =
             serde_json::from_slice(&serde_json::to_vec(&power).unwrap()).unwrap();
@@ -786,6 +1049,51 @@ mod tests {
         assert_eq!(
             before.cumulative_heat_rejected_kwh,
             after.cumulative_heat_rejected_kwh
+        );
+    }
+
+    #[test]
+    fn water_mass_balance_closes_through_treatment_and_consumption() {
+        let mut water = WaterSimulation::new();
+        for _ in 0..20_000 {
+            let snapshot = water.step(0.5, true, true, 0.5, 0.4);
+            assert!(snapshot.instantaneous_balance_error_kgph.abs() < 1.0e-7);
+            assert!(snapshot.potable_water_kg >= 0.0);
+            assert!(snapshot.wastewater_kg >= 0.0);
+            assert!(snapshot.brine_kg >= 0.0);
+        }
+    }
+
+    #[test]
+    fn treatment_shutdown_degrades_quality_and_accumulates_wastewater() {
+        let mut water = WaterSimulation::new();
+        let opening_wastewater = water.snapshot().wastewater_kg;
+        for _ in 0..43_200 {
+            water.step(1.0, false, false, 0.5, 0.4);
+        }
+        let snapshot = water.snapshot();
+        assert!(!snapshot.treatment_available);
+        assert!(snapshot.wastewater_kg > opening_wastewater);
+        assert!(snapshot.alarm_water_quality);
+        assert!(snapshot.instantaneous_balance_error_kgph.abs() < 1.0e-7);
+    }
+
+    #[test]
+    fn water_state_round_trip_preserves_stocks_and_integrals() {
+        let mut water = WaterSimulation::new();
+        for _ in 0..100 {
+            water.step(1.0, true, true, 0.5, 0.4);
+        }
+        let restored: WaterSimulation =
+            serde_json::from_slice(&serde_json::to_vec(&water).unwrap()).unwrap();
+        let before = water.snapshot();
+        let after = restored.snapshot();
+        assert_eq!(before.potable_water_kg, after.potable_water_kg);
+        assert_eq!(before.wastewater_kg, after.wastewater_kg);
+        assert_eq!(before.brine_kg, after.brine_kg);
+        assert_eq!(
+            before.cumulative_external_input_kg,
+            after.cumulative_external_input_kg
         );
     }
 }

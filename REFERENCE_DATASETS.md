@@ -113,4 +113,11 @@ They may be reconsidered only for a narrowly documented algorithmic test that do
 
 Current implementation status: the Airlock equalization and vent valves now provide deterministic lag, travel-rate limiting, deadband, breakaway stiction, leakage, sensor bias, and hard-stuck behavior with commanded/true/sensed/residual telemetry. Hysteresis, stochastic noise, dataset manifests, parameter fitting, and held-out comparison metrics remain to be implemented before claiming DAMADICS or ISDB calibration.
 
+The Water PEA now supplies conserved potable, wastewater, brine, and discharge inventories,
+power-dependent treatment, evolving water-quality indicators, alarms, persistence, and independent
+REST/UNS/OPC UA surfaces. This creates the native process on which SWaT/WADI/BATADAL-inspired
+campaigns can be translated, but no external attack trace has yet been imported or replayed.
+Similarly, ECLSS reliability sources are cataloged but have not yet been converted into sampled
+failure/repair distributions; the present ECLSS dynamics should not be described as MADS-calibrated.
+
 The initial Power PEA now provides a conservation-checked islanded DC microgrid with Mars-sol solar forcing, fission generation, battery charge/discharge constraints and efficiency, coupled subsystem demand, load shedding, cumulative energy accounting, durable restart state, REST/UNS telemetry, and an independent OPC UA endpoint. It is not yet calibrated to a battery aging dataset: pack topology, temperature, resistance growth, capacity fade, cycle damage, and chemistry-specific limits remain explicit follow-on work.
