@@ -147,6 +147,21 @@ pub struct CommandChannelState {
     pub req: CommandRequestFields,
     pub rsp: CommandResponseFields,
     pub last_sequence_processed: u32,
+    #[serde(default)]
+    pub has_processed_sequence: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandAuditRecord {
+    pub audit_id: u64,
+    pub timestamp_ms: u64,
+    pub sim_time_sec: f64,
+    pub source: CommandSourceEnum,
+    pub sequence_id: u32,
+    pub command: CommandEnum,
+    pub decision: String,
+    pub reason: String,
+    pub accepted_sequence_before: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,6 +389,52 @@ pub struct Snapshot {
     pub event_log: Vec<EventEntry>,
     pub operator_channel: CommandChannelState,
     pub remote_channel: CommandChannelState,
+    #[serde(default)]
+    pub eclss_pressure_pa: f64,
+    #[serde(default)]
+    pub eclss_co2_ppm: f64,
+    #[serde(default)]
+    pub eclss_o2_percent: f64,
+    #[serde(default)]
+    pub eclss_humidity_pct: f64,
+    #[serde(default)]
+    pub eclss_water_recovery_pct: f64,
+    #[serde(default)]
+    pub eclss_o2_generation_kgph: f64,
+    #[serde(default)]
+    pub eclss_co2_capture_kgph: f64,
+    #[serde(default)]
+    pub sabatier_reactor_temp_c: f64,
+    #[serde(default)]
+    pub sabatier_reactor_pressure_bar: f64,
+    #[serde(default)]
+    pub sabatier_co2_feed_kgph: f64,
+    #[serde(default)]
+    pub sabatier_h2_feed_kgph: f64,
+    #[serde(default)]
+    pub sabatier_conversion_efficiency_pct: f64,
+    #[serde(default)]
+    pub sabatier_methane_production_kgph: f64,
+    #[serde(default)]
+    pub eclss_co2_scrubber_running: bool,
+    #[serde(default)]
+    pub eclss_electrolyzer_running: bool,
+    #[serde(default)]
+    pub eclss_water_processor_running: bool,
+    #[serde(default)]
+    pub eclss_branch_isolated: bool,
+    #[serde(default)]
+    pub eclss_safe_haven_enabled: bool,
+    #[serde(default)]
+    pub sabatier_methanation_enabled: bool,
+    #[serde(default)]
+    pub sabatier_feed_conditioning_enabled: bool,
+    #[serde(default)]
+    pub sabatier_hydrogen_recovery_enabled: bool,
+    #[serde(default)]
+    pub sabatier_catalyst_regen_active: bool,
+    #[serde(default)]
+    pub sabatier_emergency_vent_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

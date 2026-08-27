@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "contract_id": "underhill-airlock-command-replay-v1",
+  "dataset_id": "swat-wadi-batadal-security-family",
+  "evidence_class": "underhill_native_swat_wadi_batadal_informed",
+  "source_artifact_sha256": null,
+  "thresholds": {
+    "minimum_attempts": 3,
+    "minimum_replay_rejections": 2,
+    "require_baseline_accepted": true,
+    "require_watermark_preserved": true,
+    "require_safety_state_preserved": true
+  },
+  "claim_boundary": "This contract qualifies Underhill's native HTTP/OPC UA command sequence and safety-state behavior. It is structurally informed by SWaT, WADI, and BATADAL attack classes but does not replay their packets, protocols, plant values, or labels."
+}

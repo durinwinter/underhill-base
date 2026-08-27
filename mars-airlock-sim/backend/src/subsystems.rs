@@ -21,6 +21,11 @@ pub struct EclssSnapshot {
     pub alarm_low_o2: bool,
     pub alarm_maintenance_required: bool,
     pub reliability: EclssReliabilitySnapshot,
+    pub co2_scrubber_running: bool,
+    pub electrolyzer_running: bool,
+    pub water_processor_running: bool,
+    pub branch_isolated: bool,
+    pub safe_haven_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +41,11 @@ pub struct SabatierSnapshot {
     pub catalyst_health_pct: f64,
     pub power_kw: f64,
     pub alarm_reactor_temp: bool,
+    pub methanation_enabled: bool,
+    pub feed_conditioning_enabled: bool,
+    pub hydrogen_recovery_enabled: bool,
+    pub catalyst_regen_active: bool,
+    pub emergency_vent_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1072,6 +1082,26 @@ pub struct EclssSimulation {
     power_kw: f64,
     #[serde(default)]
     reliability: EclssReliabilityState,
+    #[serde(default = "default_true")]
+    co2_scrubber_running: bool,
+    #[serde(default = "default_true")]
+    electrolyzer_running: bool,
+    #[serde(default = "default_true")]
+    water_processor_running: bool,
+    #[serde(default)]
+    branch_isolated: bool,
+    #[serde(default)]
+    safe_haven_enabled: bool,
+    #[serde(default)]
+    co2_removal_flow_target_kgph: Option<f64>,
+    #[serde(default)]
+    o2_generation_target_kgph: Option<f64>,
+    #[serde(default)]
+    water_recovery_target_pct: Option<f64>,
+    #[serde(default)]
+    humidity_target_pct: Option<f64>,
+    #[serde(default)]
+    cabin_pressure_target_kpa: Option<f64>,
 }
 
 impl EclssSimulation {
@@ -1087,7 +1117,77 @@ impl EclssSimulation {
             o2_generation_kgph: 0.8,
             power_kw: 11.0,
             reliability: EclssReliabilityState::default(),
+            co2_scrubber_running: true,
+            electrolyzer_running: true,
+            water_processor_running: true,
+            branch_isolated: false,
+            safe_haven_enabled: false,
+            co2_removal_flow_target_kgph: None,
+            o2_generation_target_kgph: None,
+            water_recovery_target_pct: None,
+            humidity_target_pct: None,
+            cabin_pressure_target_kpa: None,
         }
+    }
+
+    pub fn set_co2_scrubber_running(&mut self, running: bool) {
+        self.co2_scrubber_running = running;
+    }
+
+    pub fn set_electrolyzer_running(&mut self, running: bool) {
+        self.electrolyzer_running = running;
+    }
+
+    pub fn set_water_processor_running(&mut self, running: bool) {
+        self.water_processor_running = running;
+    }
+
+    pub fn set_branch_isolated(&mut self, isolated: bool) {
+        self.branch_isolated = isolated;
+    }
+
+    pub fn set_safe_haven_enabled(&mut self, enabled: bool) {
+        self.safe_haven_enabled = enabled;
+    }
+
+    pub fn set_co2_removal_flow_target(&mut self, target_kgph: f64) {
+        self.co2_removal_flow_target_kgph = Some(target_kgph.clamp(0.0, 3.0));
+    }
+
+    pub fn set_o2_generation_target(&mut self, target_kgph: f64) {
+        self.o2_generation_target_kgph = Some(target_kgph.clamp(0.0, 3.0));
+    }
+
+    pub fn set_water_recovery_target(&mut self, target_pct: f64) {
+        self.water_recovery_target_pct = Some(target_pct.clamp(0.0, 100.0));
+    }
+
+    pub fn set_humidity_target(&mut self, target_pct: f64) {
+        self.humidity_target_pct = Some(target_pct.clamp(20.0, 80.0));
+    }
+
+    pub fn set_cabin_pressure_target(&mut self, target_kpa: f64) {
+        self.cabin_pressure_target_kpa = Some(target_kpa.clamp(20.0, 110.0));
+    }
+
+    pub fn co2_scrubber_running(&self) -> bool {
+        self.co2_scrubber_running
+    }
+
+    pub fn electrolyzer_running(&self) -> bool {
+        self.electrolyzer_running
+    }
+
+    pub fn water_processor_running(&self) -> bool {
+        self.water_processor_running
+    }
+
+    pub fn branch_isolated(&self) -> bool {
+        self.branch_isolated
+    }
+
+    pub fn safe_haven_enabled(&self) -> bool {
+        self.safe_haven_enabled
     }
 
     pub fn step(&mut self, dt_sec: f64, running: bool) -> EclssSnapshot {
@@ -1095,50 +1195,77 @@ impl EclssSimulation {
             self.sim_time_sec += dt_sec;
         }
         let capacity = self.reliability.step(dt_sec, running);
-        if running {
-            let co2_target_capture =
-                ((self.co2_ppm - 700.0) / 500.0).clamp(0.25, 1.8) * capacity.carbon_dioxide_removal;
+
+        // Safe haven forces every life-support process online regardless of
+        // individual toggles; branch isolation disconnects the cabin loop
+        // from any process that hasn't been overridden by safe haven.
+        let scrubber_active = running
+            && (self.safe_haven_enabled || (self.co2_scrubber_running && !self.branch_isolated));
+        let electrolyzer_active = running
+            && (self.safe_haven_enabled || (self.electrolyzer_running && !self.branch_isolated));
+        let water_processor_active = running
+            && (self.safe_haven_enabled || (self.water_processor_running && !self.branch_isolated));
+
+        if scrubber_active {
+            let co2_target_capture = self.co2_removal_flow_target_kgph.unwrap_or_else(|| {
+                ((self.co2_ppm - 700.0) / 500.0).clamp(0.25, 1.8) * capacity.carbon_dioxide_removal
+            });
             self.co2_capture_kgph =
                 first_order(self.co2_capture_kgph, co2_target_capture, 0.35, dt_sec);
-
-            let o2_target_gen =
-                ((21.1 - self.o2_percent) * 0.9 + 0.7).clamp(0.5, 1.6) * capacity.oxygen_generation;
-            self.o2_generation_kgph =
-                first_order(self.o2_generation_kgph, o2_target_gen, 0.25, dt_sec);
-
             let crew_co2_load = 65.0;
             self.co2_ppm += dt_sec * (crew_co2_load - self.co2_capture_kgph * 80.0);
             self.co2_ppm = self.co2_ppm.clamp(400.0, 9000.0);
+        } else {
+            self.co2_capture_kgph = first_order(self.co2_capture_kgph, 0.0, 0.5, dt_sec);
+            self.co2_ppm += dt_sec * 38.0;
+            self.co2_ppm = self.co2_ppm.clamp(400.0, 9000.0);
+        }
 
+        if electrolyzer_active {
+            let o2_target_gen = self.o2_generation_target_kgph.unwrap_or_else(|| {
+                ((21.1 - self.o2_percent) * 0.9 + 0.7).clamp(0.5, 1.6) * capacity.oxygen_generation
+            });
+            self.o2_generation_kgph =
+                first_order(self.o2_generation_kgph, o2_target_gen, 0.25, dt_sec);
             self.o2_percent += dt_sec * (self.o2_generation_kgph * 0.015 - 0.004);
             self.o2_percent = self.o2_percent.clamp(18.0, 24.0);
+        } else {
+            self.o2_generation_kgph = first_order(self.o2_generation_kgph, 0.0, 0.5, dt_sec);
+            self.o2_percent = first_order(self.o2_percent, 20.4, 0.02, dt_sec);
+        }
 
-            let humidity_target = 47.0 + (1.0 - capacity.humidity_control) * 18.0;
+        if water_processor_active {
+            let humidity_target = self
+                .humidity_target_pct
+                .unwrap_or(47.0 + (1.0 - capacity.humidity_control) * 18.0);
             self.humidity_pct = first_order(
                 self.humidity_pct,
                 humidity_target,
                 0.12 * capacity.humidity_control.max(0.02),
                 dt_sec,
             );
-            let recovery_target = 20.0 + 68.0 * capacity.water_recovery;
+            let recovery_target = self
+                .water_recovery_target_pct
+                .unwrap_or(20.0 + 68.0 * capacity.water_recovery);
             self.water_recovery_pct =
                 first_order(self.water_recovery_pct, recovery_target, 0.08, dt_sec);
-            self.power_kw = first_order(
-                self.power_kw,
-                8.5 + self.co2_capture_kgph * 2.8 + self.o2_generation_kgph * 2.4,
-                0.3,
-                dt_sec,
-            );
         } else {
-            self.co2_capture_kgph = first_order(self.co2_capture_kgph, 0.0, 0.5, dt_sec);
-            self.o2_generation_kgph = first_order(self.o2_generation_kgph, 0.0, 0.5, dt_sec);
-            self.co2_ppm += dt_sec * 38.0;
-            self.co2_ppm = self.co2_ppm.clamp(400.0, 9000.0);
-            self.o2_percent = first_order(self.o2_percent, 20.4, 0.02, dt_sec);
             self.humidity_pct = first_order(self.humidity_pct, 54.0, 0.04, dt_sec);
             self.water_recovery_pct = first_order(self.water_recovery_pct, 64.0, 0.04, dt_sec);
-            self.power_kw = first_order(self.power_kw, 2.0, 0.4, dt_sec);
         }
+
+        let cabin_pressure_target = self.cabin_pressure_target_kpa.unwrap_or(101.3);
+        self.cabin_pressure_kpa =
+            first_order(self.cabin_pressure_kpa, cabin_pressure_target, 0.05, dt_sec);
+
+        self.power_kw = first_order(
+            self.power_kw,
+            if running { 8.5 } else { 2.0 }
+                + self.co2_capture_kgph * 2.8
+                + self.o2_generation_kgph * 2.4,
+            if running { 0.3 } else { 0.4 },
+            dt_sec,
+        );
 
         self.snapshot()
     }
@@ -1160,6 +1287,11 @@ impl EclssSimulation {
             alarm_low_o2: self.o2_percent < 19.3,
             alarm_maintenance_required: reliability.maintenance_backlog > 0,
             reliability,
+            co2_scrubber_running: self.co2_scrubber_running,
+            electrolyzer_running: self.electrolyzer_running,
+            water_processor_running: self.water_processor_running,
+            branch_isolated: self.branch_isolated,
+            safe_haven_enabled: self.safe_haven_enabled,
         }
     }
 
@@ -1242,6 +1374,24 @@ pub struct SabatierSimulation {
     water_production_kgph: f64,
     catalyst_health_pct: f64,
     power_kw: f64,
+    #[serde(default = "default_true")]
+    methanation_enabled: bool,
+    #[serde(default = "default_true")]
+    feed_conditioning_enabled: bool,
+    #[serde(default)]
+    hydrogen_recovery_enabled: bool,
+    #[serde(default)]
+    catalyst_regen_active: bool,
+    #[serde(default)]
+    emergency_vent_active: bool,
+    #[serde(default = "default_hundred")]
+    co2_feed_valve_pct: f64,
+    #[serde(default = "default_hundred")]
+    h2_feed_valve_pct: f64,
+    #[serde(default)]
+    reactor_temp_target_c: Option<f64>,
+    #[serde(default)]
+    reactor_pressure_target_bar: Option<f64>,
 }
 
 impl SabatierSimulation {
@@ -1256,7 +1406,80 @@ impl SabatierSimulation {
             water_production_kgph: 0.0,
             catalyst_health_pct: 99.5,
             power_kw: 0.9,
+            methanation_enabled: true,
+            feed_conditioning_enabled: true,
+            hydrogen_recovery_enabled: false,
+            catalyst_regen_active: false,
+            emergency_vent_active: false,
+            co2_feed_valve_pct: 100.0,
+            h2_feed_valve_pct: 100.0,
+            reactor_temp_target_c: None,
+            reactor_pressure_target_bar: None,
         }
+    }
+
+    pub fn set_methanation_enabled(&mut self, enabled: bool) {
+        self.methanation_enabled = enabled;
+    }
+
+    pub fn set_feed_conditioning_enabled(&mut self, enabled: bool) {
+        self.feed_conditioning_enabled = enabled;
+    }
+
+    pub fn set_hydrogen_recovery_enabled(&mut self, enabled: bool) {
+        self.hydrogen_recovery_enabled = enabled;
+    }
+
+    pub fn set_catalyst_regen_active(&mut self, active: bool) {
+        self.catalyst_regen_active = active;
+    }
+
+    pub fn set_emergency_vent_active(&mut self, active: bool) {
+        self.emergency_vent_active = active;
+    }
+
+    pub fn set_co2_feed_valve_pct(&mut self, pct: f64) {
+        self.co2_feed_valve_pct = pct.clamp(0.0, 100.0);
+    }
+
+    pub fn set_h2_feed_valve_pct(&mut self, pct: f64) {
+        self.h2_feed_valve_pct = pct.clamp(0.0, 100.0);
+    }
+
+    pub fn set_reactor_temp_target(&mut self, target_c: f64) {
+        self.reactor_temp_target_c = Some(target_c.clamp(150.0, 390.0));
+    }
+
+    pub fn set_reactor_pressure_target(&mut self, target_bar: f64) {
+        self.reactor_pressure_target_bar = Some(target_bar.clamp(1.0, 15.0));
+    }
+
+    /// Coordinated safe shutdown: stands down methanation, feed conditioning,
+    /// and hydrogen recovery together.
+    pub fn safe_shutdown(&mut self) {
+        self.methanation_enabled = false;
+        self.feed_conditioning_enabled = false;
+        self.hydrogen_recovery_enabled = false;
+    }
+
+    pub fn methanation_enabled(&self) -> bool {
+        self.methanation_enabled
+    }
+
+    pub fn feed_conditioning_enabled(&self) -> bool {
+        self.feed_conditioning_enabled
+    }
+
+    pub fn hydrogen_recovery_enabled(&self) -> bool {
+        self.hydrogen_recovery_enabled
+    }
+
+    pub fn catalyst_regen_active(&self) -> bool {
+        self.catalyst_regen_active
+    }
+
+    pub fn emergency_vent_active(&self) -> bool {
+        self.emergency_vent_active
     }
 
     pub fn step(
@@ -1265,20 +1488,69 @@ impl SabatierSimulation {
         running: bool,
         eclss_co2_available_kgph: f64,
     ) -> SabatierSnapshot {
-        if running {
-            self.reactor_temp_c = first_order(self.reactor_temp_c, 325.0, 0.18, dt_sec);
-            self.reactor_pressure_bar = first_order(self.reactor_pressure_bar, 9.0, 0.18, dt_sec);
+        let standby_temp_c = 215.0;
+        let standby_pressure_bar = 3.5;
 
-            let co2_target = eclss_co2_available_kgph.clamp(0.2, 1.6);
+        if self.emergency_vent_active {
+            // Rapid, forced vent to standby conditions; production stops immediately.
+            self.reactor_temp_c = first_order(self.reactor_temp_c, standby_temp_c, 0.6, dt_sec);
+            self.reactor_pressure_bar =
+                first_order(self.reactor_pressure_bar, standby_pressure_bar, 0.6, dt_sec);
+            self.co2_feed_kgph = 0.0;
+            self.h2_feed_kgph = 0.0;
+            self.conversion_efficiency_pct = 0.0;
+            self.methane_production_kgph = 0.0;
+            self.water_production_kgph = 0.0;
+            self.power_kw = first_order(self.power_kw, 0.9, 0.4, dt_sec);
+
+            // Vent auto-clears once the reactor has actually reached standby conditions.
+            if (self.reactor_temp_c - standby_temp_c).abs() < 1.0
+                && (self.reactor_pressure_bar - standby_pressure_bar).abs() < 0.1
+            {
+                self.emergency_vent_active = false;
+            }
+        } else if self.catalyst_regen_active {
+            // Offline for catalyst regeneration: production stops, health recovers.
+            self.reactor_temp_c = first_order(self.reactor_temp_c, standby_temp_c, 0.22, dt_sec);
+            self.reactor_pressure_bar = first_order(
+                self.reactor_pressure_bar,
+                standby_pressure_bar,
+                0.22,
+                dt_sec,
+            );
+            self.co2_feed_kgph = first_order(self.co2_feed_kgph, 0.0, 0.45, dt_sec);
+            self.h2_feed_kgph = first_order(self.h2_feed_kgph, 0.0, 0.45, dt_sec);
+            self.conversion_efficiency_pct =
+                first_order(self.conversion_efficiency_pct, 0.0, 0.5, dt_sec);
+            self.methane_production_kgph =
+                first_order(self.methane_production_kgph, 0.0, 0.5, dt_sec);
+            self.water_production_kgph = first_order(self.water_production_kgph, 0.0, 0.5, dt_sec);
+            self.power_kw = first_order(self.power_kw, 1.2, 0.3, dt_sec);
+            self.catalyst_health_pct += dt_sec * 0.05;
+            self.catalyst_health_pct = self.catalyst_health_pct.clamp(70.0, 100.0);
+        } else if running && self.methanation_enabled && self.feed_conditioning_enabled {
+            let temp_target = self.reactor_temp_target_c.unwrap_or(325.0);
+            let pressure_target = self.reactor_pressure_target_bar.unwrap_or(9.0);
+            self.reactor_temp_c = first_order(self.reactor_temp_c, temp_target, 0.18, dt_sec);
+            self.reactor_pressure_bar =
+                first_order(self.reactor_pressure_bar, pressure_target, 0.18, dt_sec);
+
+            let co2_target =
+                eclss_co2_available_kgph.clamp(0.2, 1.6) * (self.co2_feed_valve_pct / 100.0);
             self.co2_feed_kgph = first_order(self.co2_feed_kgph, co2_target, 0.3, dt_sec);
-            self.h2_feed_kgph =
-                first_order(self.h2_feed_kgph, self.co2_feed_kgph * 0.182, 0.25, dt_sec);
+            let h2_target = self.co2_feed_kgph * 0.182 * (self.h2_feed_valve_pct / 100.0);
+            self.h2_feed_kgph = first_order(self.h2_feed_kgph, h2_target, 0.25, dt_sec);
 
             let temperature_factor =
                 1.0 - ((self.reactor_temp_c - 340.0).abs() / 220.0).clamp(0.0, 0.35);
             let catalyst_factor = (self.catalyst_health_pct / 100.0).clamp(0.65, 1.0);
+            let recovery_bonus = if self.hydrogen_recovery_enabled {
+                1.05
+            } else {
+                1.0
+            };
             self.conversion_efficiency_pct =
-                (84.0 * temperature_factor * catalyst_factor).clamp(60.0, 91.0);
+                (84.0 * temperature_factor * catalyst_factor * recovery_bonus).clamp(60.0, 91.0);
 
             let efficiency = self.conversion_efficiency_pct / 100.0;
             self.methane_production_kgph = self.co2_feed_kgph * 0.364 * efficiency;
@@ -1289,8 +1561,13 @@ impl SabatierSimulation {
             self.catalyst_health_pct -= dt_sec * 0.00065;
             self.catalyst_health_pct = self.catalyst_health_pct.clamp(70.0, 100.0);
         } else {
-            self.reactor_temp_c = first_order(self.reactor_temp_c, 215.0, 0.22, dt_sec);
-            self.reactor_pressure_bar = first_order(self.reactor_pressure_bar, 3.5, 0.22, dt_sec);
+            self.reactor_temp_c = first_order(self.reactor_temp_c, standby_temp_c, 0.22, dt_sec);
+            self.reactor_pressure_bar = first_order(
+                self.reactor_pressure_bar,
+                standby_pressure_bar,
+                0.22,
+                dt_sec,
+            );
             self.co2_feed_kgph = first_order(self.co2_feed_kgph, 0.0, 0.45, dt_sec);
             self.h2_feed_kgph = first_order(self.h2_feed_kgph, 0.0, 0.45, dt_sec);
             self.conversion_efficiency_pct =
@@ -1317,6 +1594,11 @@ impl SabatierSimulation {
             catalyst_health_pct: self.catalyst_health_pct,
             power_kw: self.power_kw,
             alarm_reactor_temp: self.reactor_temp_c > 390.0,
+            methanation_enabled: self.methanation_enabled,
+            feed_conditioning_enabled: self.feed_conditioning_enabled,
+            hydrogen_recovery_enabled: self.hydrogen_recovery_enabled,
+            catalyst_regen_active: self.catalyst_regen_active,
+            emergency_vent_active: self.emergency_vent_active,
         }
     }
 
@@ -1337,6 +1619,14 @@ impl SabatierSimulation {
 
 fn first_order(current: f64, target: f64, rate: f64, dt_sec: f64) -> f64 {
     current + (target - current) * (1.0 - (-rate * dt_sec).exp())
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_hundred() -> f64 {
+    100.0
 }
 
 fn now_ms() -> u64 {

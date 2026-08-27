@@ -4,12 +4,13 @@ use std::sync::OnceLock;
 
 use crate::subsystems::WaterSnapshot;
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 3;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CampaignTemplateId {
     AirlockEqualizeStiction,
+    AirlockCommandSequenceReplay,
     SafetyCompoundLeakFire,
     MaintenanceSharedToolContention,
     WaterConductivityReplay,
@@ -43,6 +44,37 @@ pub struct CampaignReport {
     pub observation_count: usize,
     pub trace_qualification: Option<TraceQualificationReport>,
     pub water_replay_qualification: Option<WaterReplayQualificationReport>,
+    #[serde(default)]
+    pub command_replay_qualification: Option<CommandReplayQualificationReport>,
+    pub passed: bool,
+    pub failure_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandReplayTraceSample {
+    pub plant_elapsed_sec: f64,
+    pub attempt: String,
+    pub sequence_id: u32,
+    pub command: String,
+    pub status: String,
+    pub reject_reason: String,
+    pub accepted_sequence_after: u32,
+    pub inner_lock_engaged: bool,
+    pub outer_lock_engaged: bool,
+    pub inner_door_position_pct: f64,
+    pub outer_door_position_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandReplayQualificationReport {
+    pub contract_id: String,
+    pub evidence_class: String,
+    pub dataset_id: String,
+    pub attempt_count: usize,
+    pub replay_rejection_count: usize,
+    pub baseline_accepted: bool,
+    pub watermark_preserved: bool,
+    pub safety_state_preserved: bool,
     pub passed: bool,
     pub failure_reasons: Vec<String>,
 }
@@ -137,6 +169,26 @@ struct WaterReplayQualificationThresholds {
     minimum_concealed_alarm_samples: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct CommandReplayQualificationContract {
+    schema_version: u32,
+    contract_id: String,
+    dataset_id: String,
+    evidence_class: String,
+    source_artifact_sha256: Option<String>,
+    thresholds: CommandReplayQualificationThresholds,
+    claim_boundary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommandReplayQualificationThresholds {
+    minimum_attempts: usize,
+    minimum_replay_rejections: usize,
+    require_baseline_accepted: bool,
+    require_watermark_preserved: bool,
+    require_safety_state_preserved: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationCampaign {
     pub schema_version: u32,
@@ -157,6 +209,8 @@ pub struct ValidationCampaign {
     pub trace_samples: Vec<AirlockValveTraceSample>,
     #[serde(default)]
     pub water_replay_trace_samples: Vec<WaterReplayTraceSample>,
+    #[serde(default)]
+    pub command_replay_trace_samples: Vec<CommandReplayTraceSample>,
     #[serde(default)]
     stimulus_stage: u8,
     pub report: Option<CampaignReport>,
@@ -262,10 +316,13 @@ impl CampaignManager {
         object.remove("stimulus_stage");
         object.remove("trace_samples");
         object.remove("water_replay_trace_samples");
+        object.remove("command_replay_trace_samples");
         object.insert(
             "trace_sample_count".to_string(),
             serde_json::json!(
-                campaign.trace_samples.len() + campaign.water_replay_trace_samples.len()
+                campaign.trace_samples.len()
+                    + campaign.water_replay_trace_samples.len()
+                    + campaign.command_replay_trace_samples.len()
             ),
         );
         if matches!(
@@ -330,6 +387,13 @@ impl CampaignManager {
                     .to_string(),
             );
         }
+        if request.template_id == CampaignTemplateId::AirlockCommandSequenceReplay
+            && !(10.0..=120.0).contains(&request.duration_sec)
+        {
+            return Err(
+                "airlock command replay campaigns require duration_sec within 10..=120".to_string(),
+            );
+        }
         let (dataset_id, target_pea, ground_truth) =
             template_metadata(request.template_id, request.seed);
         let onset = plant_elapsed_sec + request.fault_onset_delay_sec;
@@ -350,6 +414,7 @@ impl CampaignManager {
             observations: Vec::new(),
             trace_samples: Vec::new(),
             water_replay_trace_samples: Vec::new(),
+            command_replay_trace_samples: Vec::new(),
             stimulus_stage: 0,
             report: None,
         };
@@ -424,6 +489,7 @@ impl CampaignManager {
             observation_count: campaign.observations.len(),
             trace_qualification: None,
             water_replay_qualification: None,
+            command_replay_qualification: None,
             passed: false,
             failure_reasons: vec![reason],
         });
@@ -535,6 +601,25 @@ impl CampaignManager {
         }
     }
 
+    pub fn record_command_replay_trace(
+        &mut self,
+        campaign_id: &str,
+        samples: Vec<CommandReplayTraceSample>,
+    ) -> Result<(), String> {
+        let campaign = self
+            .campaigns
+            .iter_mut()
+            .find(|campaign| campaign.campaign_id == campaign_id)
+            .ok_or_else(|| format!("campaign not found: {campaign_id}"))?;
+        if campaign.status != CampaignStatus::Active
+            || campaign.template_id != CampaignTemplateId::AirlockCommandSequenceReplay
+        {
+            return Err("command replay trace requires an active matching campaign".to_string());
+        }
+        campaign.command_replay_trace_samples.extend(samples);
+        Ok(())
+    }
+
     pub fn advance(&mut self, plant_elapsed_sec: f64) -> Vec<CampaignAction> {
         let mut actions = Vec::new();
         for campaign in &mut self.campaigns {
@@ -618,6 +703,7 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
     let latency = first.map(|time| (time - campaign.fault_onset_plant_sec).max(0.0));
     let latency_limit = match campaign.template_id {
         CampaignTemplateId::AirlockEqualizeStiction => 30.0,
+        CampaignTemplateId::AirlockCommandSequenceReplay => 10.0,
         CampaignTemplateId::SafetyCompoundLeakFire => 15.0,
         CampaignTemplateId::MaintenanceSharedToolContention => 20.0,
         CampaignTemplateId::WaterConductivityReplay => 15.0,
@@ -659,6 +745,19 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
         } else {
             None
         };
+    let command_replay_qualification = if campaign.template_id
+        == CampaignTemplateId::AirlockCommandSequenceReplay
+    {
+        let report = qualify_command_replay_trace(&campaign.command_replay_trace_samples);
+        if !report.passed {
+            failure_reasons.push(
+                "command trace did not satisfy the native replay-rejection contract".to_string(),
+            );
+        }
+        Some(report)
+    } else {
+        None
+    };
     CampaignReport {
         expected_diagnosis: expected,
         first_correct_observation_sec: first,
@@ -667,9 +766,98 @@ fn score_campaign(campaign: &ValidationCampaign) -> CampaignReport {
         observation_count: campaign.observations.len(),
         trace_qualification,
         water_replay_qualification,
+        command_replay_qualification,
         passed: failure_reasons.is_empty(),
         failure_reasons,
     }
+}
+
+fn qualify_command_replay_trace(
+    samples: &[CommandReplayTraceSample],
+) -> CommandReplayQualificationReport {
+    let contract = command_replay_qualification_contract();
+    let thresholds = &contract.thresholds;
+    let replay_samples = samples
+        .iter()
+        .filter(|sample| sample.attempt == "duplicate" || sample.attempt == "stale")
+        .collect::<Vec<_>>();
+    let replay_rejection_count = replay_samples
+        .iter()
+        .filter(|sample| {
+            sample.status == "Rejected"
+                && (sample.reject_reason.contains("Duplicate")
+                    || sample.reject_reason.contains("Stale")
+                    || sample.reject_reason.contains("replayed"))
+        })
+        .count();
+    let baseline_accepted = samples.iter().any(|sample| {
+        sample.attempt == "baseline" && (sample.status == "Accepted" || sample.status == "Complete")
+    });
+    let baseline_watermark = samples
+        .iter()
+        .find(|sample| sample.attempt == "baseline")
+        .map(|sample| sample.accepted_sequence_after);
+    let watermark_preserved = baseline_watermark.is_some_and(|watermark| {
+        replay_samples
+            .iter()
+            .all(|sample| sample.accepted_sequence_after == watermark)
+    });
+    let safety_state_preserved = samples.first().is_some_and(|first| {
+        samples.iter().all(|sample| {
+            sample.inner_lock_engaged == first.inner_lock_engaged
+                && sample.outer_lock_engaged == first.outer_lock_engaged
+                && (sample.inner_door_position_pct - first.inner_door_position_pct).abs() < 1.0e-9
+                && (sample.outer_door_position_pct - first.outer_door_position_pct).abs() < 1.0e-9
+        })
+    });
+    let mut failure_reasons = Vec::new();
+    if samples.len() < thresholds.minimum_attempts {
+        failure_reasons.push(format!(
+            "fewer than {} command attempts were captured",
+            thresholds.minimum_attempts
+        ));
+    }
+    if replay_rejection_count < thresholds.minimum_replay_rejections {
+        failure_reasons.push(format!(
+            "fewer than {} replay attempts were rejected",
+            thresholds.minimum_replay_rejections
+        ));
+    }
+    if thresholds.require_baseline_accepted && !baseline_accepted {
+        failure_reasons.push("baseline command was not accepted".to_string());
+    }
+    if thresholds.require_watermark_preserved && !watermark_preserved {
+        failure_reasons.push("accepted sequence watermark changed during replay".to_string());
+    }
+    if thresholds.require_safety_state_preserved && !safety_state_preserved {
+        failure_reasons.push("airlock safety state changed during replay".to_string());
+    }
+    CommandReplayQualificationReport {
+        contract_id: contract.contract_id.clone(),
+        evidence_class: contract.evidence_class.clone(),
+        dataset_id: contract.dataset_id.clone(),
+        attempt_count: samples.len(),
+        replay_rejection_count,
+        baseline_accepted,
+        watermark_preserved,
+        safety_state_preserved,
+        passed: failure_reasons.is_empty(),
+        failure_reasons,
+    }
+}
+
+fn command_replay_qualification_contract() -> &'static CommandReplayQualificationContract {
+    static CONTRACT: OnceLock<CommandReplayQualificationContract> = OnceLock::new();
+    CONTRACT.get_or_init(|| {
+        let contract: CommandReplayQualificationContract = serde_json::from_str(include_str!(
+            "../../../validation/datasets/contracts/underhill-airlock-command-replay-v1.json"
+        ))
+        .expect("embedded command replay qualification contract must parse");
+        assert_eq!(contract.schema_version, 1);
+        assert!(contract.source_artifact_sha256.is_none());
+        assert!(!contract.claim_boundary.trim().is_empty());
+        contract
+    })
 }
 
 fn qualify_water_replay_trace(
@@ -868,6 +1056,17 @@ fn template_metadata(
                 "evidence_class": "underhill_native_damadics_informed"
             }),
         ),
+        CampaignTemplateId::AirlockCommandSequenceReplay => (
+            "swat-wadi-batadal-security-family",
+            "AIRLOCK-PEA-001",
+            serde_json::json!({
+                "expected_diagnosis": "airlock_command_sequence_replay",
+                "attempts": ["duplicate", "stale"],
+                "attempted_command": "UNLOCK_OUTER_DOOR",
+                "trace_contract_id": "underhill-airlock-command-replay-v1",
+                "evidence_class": "underhill_native_swat_wadi_batadal_informed"
+            }),
+        ),
         CampaignTemplateId::SafetyCompoundLeakFire => (
             "swat-wadi-batadal-security-family",
             "SAFETY-PEA-001",
@@ -952,6 +1151,44 @@ mod tests {
                 101_300.0,
             );
         }
+    }
+
+    #[test]
+    fn command_replay_contract_requires_rejection_and_unchanged_safety_state() {
+        let sample = |attempt: &str, sequence_id: u32, status: &str, reason: &str| {
+            CommandReplayTraceSample {
+                plant_elapsed_sec: 10.0,
+                attempt: attempt.to_string(),
+                sequence_id,
+                command: if attempt == "baseline" {
+                    "LockOuterDoor".to_string()
+                } else {
+                    "UnlockOuterDoor".to_string()
+                },
+                status: status.to_string(),
+                reject_reason: reason.to_string(),
+                accepted_sequence_after: 42,
+                inner_lock_engaged: true,
+                outer_lock_engaged: true,
+                inner_door_position_pct: 0.0,
+                outer_door_position_pct: 0.0,
+            }
+        };
+        let report = qualify_command_replay_trace(&[
+            sample("baseline", 42, "Complete", ""),
+            sample("duplicate", 42, "Rejected", "Duplicate sequence rejected"),
+            sample(
+                "stale",
+                41,
+                "Rejected",
+                "Stale or replayed sequence rejected",
+            ),
+        ]);
+        assert!(report.passed);
+        assert!(report.baseline_accepted);
+        assert_eq!(report.replay_rejection_count, 2);
+        assert!(report.watermark_preserved);
+        assert!(report.safety_state_preserved);
     }
 
     #[test]

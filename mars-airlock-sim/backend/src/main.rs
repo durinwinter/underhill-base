@@ -31,7 +31,7 @@ use std::{
 use axum::{
     Router,
     extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade, ws::Message},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
     response::IntoResponse,
     routing::{get, post},
 };
@@ -52,14 +52,15 @@ use tokio::{
 };
 use tower_http::{
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 use tracing::{error, info, warn};
 use zenoh::Session;
 
 use crate::campaign::{
-    CampaignAction, CampaignManager, CampaignTemplateId, CreateCampaignRequest,
-    SubmitObservationRequest,
+    CampaignAction, CampaignManager, CampaignTemplateId, CommandReplayTraceSample,
+    CreateCampaignRequest, SubmitObservationRequest,
 };
 use crate::environment::{EnvironmentSimulation, EnvironmentSnapshot};
 use crate::historian::{Historian, NewHistorianSample, TelemetryQuality};
@@ -230,6 +231,19 @@ struct PeaServiceCommandRequest {
     param2: f64,
     #[serde(default = "default_execute_true")]
     execute: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdvancedCommandRequest {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    sequence_id: u32,
+    command: String,
+    #[serde(default)]
+    param1: f64,
+    #[serde(default)]
+    param2: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -868,6 +882,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/telemetry/catalog", get(api_telemetry_catalog))
         .route("/api/v1/telemetry/stats", get(api_telemetry_stats))
         .route("/api/v1/telemetry/history", get(api_telemetry_history))
+        .route("/api/v1/command-audit", get(api_command_audit))
         .route("/api/events", get(api_events))
         .route("/api/mtp/tree", get(api_mtp_tree))
         .route("/api/v1/pea", get(api_v1_list_peas))
@@ -884,6 +899,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/v1/pea/{pea_id}/operator-state",
             get(api_v1_get_subsystem_operator_state).post(api_v1_set_subsystem_operator_state),
+        )
+        .route(
+            "/api/v1/pea/{pea_id}/advanced-command",
+            post(api_v1_pea_advanced_command),
         )
         .route("/api/v1/i3x/pea", get(api_v1_i3x_list_peas))
         .route("/api/v1/i3x/pea/{pea_id}", get(api_v1_i3x_get_pea))
@@ -960,7 +979,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/faults/valve", post(api_set_valve_fault))
         .route("/api/commands/{source}/write", post(api_write_command))
         .route("/ws", get(ws_handler))
+        .route("/ws/systems", get(ws_systems_handler))
         .fallback_service(ServeDir::new(frontend_dir).not_found_service(ServeFile::new(index_file)))
+        .layer(SetResponseHeaderLayer::overriding(
+            CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(context);
 
@@ -2146,11 +2170,46 @@ async fn api_telemetry_catalog(
 }
 
 async fn api_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
-    let snapshot = {
+    let mut snapshot = {
         let sim = context.sim.read().await;
         sim.snapshot()
     };
+    enrich_with_subsystem_readouts(&context, &mut snapshot).await;
     axum::Json(snapshot)
+}
+
+/// Overlays live ECLSS/Sabatier readouts onto an airlock `Snapshot`. These
+/// subsystems run as separate simulations (`context.eclss_sim`,
+/// `context.sabatier_sim`) rather than being part of `Simulation`, so their
+/// values are merged in here at the client delivery boundary instead of at
+/// `Simulation::snapshot()`.
+async fn enrich_with_subsystem_readouts(context: &AppContext, snapshot: &mut Snapshot) {
+    let eclss = context.eclss_sim.read().await.snapshot();
+    snapshot.eclss_pressure_pa = eclss.cabin_pressure_kpa * 1000.0;
+    snapshot.eclss_co2_ppm = eclss.co2_ppm;
+    snapshot.eclss_o2_percent = eclss.o2_percent;
+    snapshot.eclss_humidity_pct = eclss.humidity_pct;
+    snapshot.eclss_water_recovery_pct = eclss.water_recovery_pct;
+    snapshot.eclss_o2_generation_kgph = eclss.o2_generation_kgph;
+    snapshot.eclss_co2_capture_kgph = eclss.co2_capture_kgph;
+    snapshot.eclss_co2_scrubber_running = eclss.co2_scrubber_running;
+    snapshot.eclss_electrolyzer_running = eclss.electrolyzer_running;
+    snapshot.eclss_water_processor_running = eclss.water_processor_running;
+    snapshot.eclss_branch_isolated = eclss.branch_isolated;
+    snapshot.eclss_safe_haven_enabled = eclss.safe_haven_enabled;
+
+    let sabatier = context.sabatier_sim.read().await.snapshot();
+    snapshot.sabatier_reactor_temp_c = sabatier.reactor_temp_c;
+    snapshot.sabatier_reactor_pressure_bar = sabatier.reactor_pressure_bar;
+    snapshot.sabatier_co2_feed_kgph = sabatier.co2_feed_kgph;
+    snapshot.sabatier_h2_feed_kgph = sabatier.h2_feed_kgph;
+    snapshot.sabatier_conversion_efficiency_pct = sabatier.conversion_efficiency_pct;
+    snapshot.sabatier_methane_production_kgph = sabatier.methane_production_kgph;
+    snapshot.sabatier_methanation_enabled = sabatier.methanation_enabled;
+    snapshot.sabatier_feed_conditioning_enabled = sabatier.feed_conditioning_enabled;
+    snapshot.sabatier_hydrogen_recovery_enabled = sabatier.hydrogen_recovery_enabled;
+    snapshot.sabatier_catalyst_regen_active = sabatier.catalyst_regen_active;
+    snapshot.sabatier_emergency_vent_active = sabatier.emergency_vent_active;
 }
 
 async fn api_power_snapshot(State(context): State<AppContext>) -> impl IntoResponse {
@@ -2415,6 +2474,11 @@ async fn api_get_campaign_trace(
             .iter()
             .map(|sample| serde_json::to_value(sample).unwrap_or_else(|_| json!({})))
             .collect::<Vec<_>>(),
+        CampaignTemplateId::AirlockCommandSequenceReplay => campaign
+            .command_replay_trace_samples
+            .iter()
+            .map(|sample| serde_json::to_value(sample).unwrap_or_else(|_| json!({})))
+            .collect::<Vec<_>>(),
         CampaignTemplateId::SafetyCompoundLeakFire
         | CampaignTemplateId::MaintenanceSharedToolContention => Vec::new(),
     };
@@ -2441,7 +2505,11 @@ async fn api_create_campaign(
     axum::Json(request): axum::Json<CreateCampaignRequest>,
 ) -> Result<(StatusCode, axum::Json<serde_json::Value>), (StatusCode, String)> {
     let _transaction = context.plant_transaction.lock().await;
-    if request.template_id == CampaignTemplateId::AirlockEqualizeStiction {
+    if matches!(
+        request.template_id,
+        CampaignTemplateId::AirlockEqualizeStiction
+            | CampaignTemplateId::AirlockCommandSequenceReplay
+    ) {
         let snapshot = context.sim.read().await.snapshot();
         if snapshot.active_command.state == model::CommandStatusEnum::Running
             || !snapshot.inner_lock_engaged
@@ -2579,6 +2647,76 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                         .map_err(anyhow::Error::msg)?;
                     serde_json::to_value(baseline)?
                 }
+                CampaignTemplateId::AirlockCommandSequenceReplay => {
+                    let plant_elapsed_sec = context.plant_runtime.read().await.plant_elapsed_sec;
+                    let mut sim = context.sim.write().await;
+                    let before = sim.snapshot();
+                    if before.active_command.state == model::CommandStatusEnum::Running
+                        || !before.inner_lock_engaged
+                        || !before.outer_lock_engaged
+                    {
+                        return Err(anyhow::anyhow!(
+                            "command replay validation requires an idle airlock with both doors locked"
+                        ));
+                    }
+                    let sequence_id = if before.remote_channel.has_processed_sequence {
+                        before
+                            .remote_channel
+                            .last_sequence_processed
+                            .wrapping_add(1)
+                    } else {
+                        1
+                    };
+                    let attempts = [
+                        ("baseline", sequence_id, CommandEnum::LockOuterDoor),
+                        ("duplicate", sequence_id, CommandEnum::UnlockOuterDoor),
+                        (
+                            "stale",
+                            sequence_id.wrapping_sub(1),
+                            CommandEnum::UnlockOuterDoor,
+                        ),
+                    ];
+                    let mut trace_samples = Vec::new();
+                    for (attempt, attempt_sequence, command) in attempts {
+                        let request = CommandRequestFields {
+                            sequence_id: attempt_sequence,
+                            command,
+                            execute: true,
+                            ..CommandRequestFields::default()
+                        };
+                        let response =
+                            sim.write_request(CommandSourceEnum::RemoteOpcua, request.clone());
+                        let _ = sim.write_request(
+                            CommandSourceEnum::RemoteOpcua,
+                            CommandRequestFields {
+                                execute: false,
+                                ..request
+                            },
+                        );
+                        let snapshot = sim.snapshot();
+                        trace_samples.push(CommandReplayTraceSample {
+                            plant_elapsed_sec,
+                            attempt: attempt.to_string(),
+                            sequence_id: attempt_sequence,
+                            command: format!("{command:?}"),
+                            status: format!("{:?}", response.status),
+                            reject_reason: response.reject_reason,
+                            accepted_sequence_after: snapshot
+                                .remote_channel
+                                .last_sequence_processed,
+                            inner_lock_engaged: snapshot.inner_lock_engaged,
+                            outer_lock_engaged: snapshot.outer_lock_engaged,
+                            inner_door_position_pct: snapshot.inner_door_position_pct,
+                            outer_door_position_pct: snapshot.outer_door_position_pct,
+                        });
+                    }
+                    json!({
+                        "accepted_sequence_before": before.remote_channel.has_processed_sequence
+                            .then_some(before.remote_channel.last_sequence_processed),
+                        "campaign_sequence_id": sequence_id,
+                        "command_replay_trace_samples": trace_samples,
+                    })
+                }
                 CampaignTemplateId::MaintenanceSharedToolContention => {
                     let work_order_ids = [
                         format!("{campaign_id}:water-loop-primary"),
@@ -2645,12 +2783,25 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                     })
                 }
             };
+            let command_replay_trace = baseline
+                .get("command_replay_trace_samples")
+                .cloned()
+                .map(serde_json::from_value::<Vec<CommandReplayTraceSample>>)
+                .transpose()?;
             context
                 .campaigns
                 .write()
                 .await
                 .set_baseline(&campaign_id, baseline)
                 .map_err(anyhow::Error::msg)?;
+            if let Some(samples) = command_replay_trace {
+                context
+                    .campaigns
+                    .write()
+                    .await
+                    .record_command_replay_trace(&campaign_id, samples)
+                    .map_err(anyhow::Error::msg)?;
+            }
             journal_operation(
                 context,
                 "validation_campaign_activated",
@@ -2716,6 +2867,7 @@ async fn apply_campaign_action(context: &AppContext, action: CampaignAction) -> 
                         )
                         .map_err(anyhow::Error::msg)?;
                 }
+                CampaignTemplateId::AirlockCommandSequenceReplay => {}
                 CampaignTemplateId::MaintenanceSharedToolContention => {
                     let work_order_ids = baseline
                         .get("work_order_ids")
@@ -2776,6 +2928,43 @@ async fn api_events(State(context): State<AppContext>) -> impl IntoResponse {
         sim.events()
     };
     axum::Json(events)
+}
+
+async fn api_command_audit(
+    Query(query): Query<HashMap<String, String>>,
+    State(context): State<AppContext>,
+) -> impl IntoResponse {
+    let offset = query
+        .get("offset")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(250)
+        .clamp(1, 2_048);
+    let (total, items) = {
+        let sim = context.sim.read().await;
+        let audit = sim.command_audit();
+        (
+            audit.len(),
+            audit
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    let next_offset = (offset + limit < total).then_some(offset + limit);
+    axum::Json(json!({
+        "schema_version": 1,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "next_offset": next_offset,
+        "items": items
+    }))
 }
 
 async fn api_mtp_tree(State(context): State<AppContext>) -> impl IntoResponse {
@@ -3913,6 +4102,251 @@ fn apply_operator_state_update(
     } else if !state.remote_control_enabled && state.source_mode == CommandSourceEnum::RemoteOpcua {
         state.source_mode = CommandSourceEnum::OperatorUi;
     }
+}
+
+async fn api_v1_pea_advanced_command(
+    Path(pea_id): Path<String>,
+    State(context): State<AppContext>,
+    axum::Json(payload): axum::Json<AdvancedCommandRequest>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let _transaction = context.plant_transaction.lock().await;
+
+    if pea_id != DEFAULT_ECLSS_PEA_ID && pea_id != DEFAULT_SABATIER_PEA_ID {
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Advanced command channel for {pea_id} is not implemented"),
+        ));
+    }
+
+    let Some((runtime_handle, operator_handle)) = subsystem_control_handles(&context, &pea_id)
+    else {
+        return Err((StatusCode::NOT_FOUND, format!("PEA not found: {pea_id}")));
+    };
+
+    let runtime_state = *runtime_handle.read().await;
+    let operator_state = operator_handle.read().await.clone();
+
+    let rejected = |reason: String| {
+        json!({
+            "pea_id": pea_id,
+            "status": "REJECTED",
+            "reject_reason": reason,
+            "operator_state": operator_state,
+            "runtime": runtime_state,
+        })
+    };
+
+    if !runtime_state.deployed {
+        return Ok(axum::Json(rejected(format!(
+            "PEA {pea_id} is not deployed"
+        ))));
+    }
+    if !runtime_state.running {
+        return Ok(axum::Json(rejected(format!("PEA {pea_id} is not running"))));
+    }
+    if matches!(
+        operator_state.operation_mode,
+        OperationMode::Off | OperationMode::Maint
+    ) {
+        return Ok(axum::Json(rejected(
+            "Blocked: subsystem operation mode is Off/Maint".to_string(),
+        )));
+    }
+    if !operator_state.command_en {
+        let reason = if operator_state.command_en_reason.trim().is_empty() {
+            "Blocked: CommandEn disabled".to_string()
+        } else {
+            operator_state.command_en_reason.clone()
+        };
+        return Ok(axum::Json(rejected(reason)));
+    }
+    if !operator_state.operator_control_enabled {
+        return Ok(axum::Json(rejected(
+            "Blocked: operator control disabled".to_string(),
+        )));
+    }
+
+    let outcome = if pea_id == DEFAULT_ECLSS_PEA_ID {
+        apply_eclss_advanced_command(&context, &payload.command, payload.param1).await
+    } else {
+        apply_sabatier_advanced_command(&context, &payload.command, payload.param1).await
+    };
+
+    let response = match outcome {
+        Ok(()) => json!({
+            "pea_id": pea_id,
+            "status": "ACCEPTED",
+            "reject_reason": "",
+            "operator_state": operator_state,
+            "runtime": runtime_state,
+        }),
+        Err(reason) => rejected(reason),
+    };
+
+    journal_operation(
+        &context,
+        "advanced_command_processed",
+        pea_id.clone(),
+        json!({
+            "command": payload.command,
+            "param1": payload.param1,
+            "param2": payload.param2,
+            "sequence_id": payload.sequence_id,
+            "source": payload.source,
+            "result": response,
+        }),
+    )
+    .await;
+
+    Ok(axum::Json(response))
+}
+
+async fn apply_eclss_advanced_command(
+    context: &AppContext,
+    command: &str,
+    param1: f64,
+) -> Result<(), String> {
+    let mut sim = context.eclss_sim.write().await;
+    match command {
+        "START_CO2_SCRUBBER_BED_A" => {
+            if sim.co2_scrubber_running() {
+                return Err("Already running".to_string());
+            }
+            sim.set_co2_scrubber_running(true);
+        }
+        "STOP_CO2_SCRUBBER_BED_A" => {
+            if !sim.co2_scrubber_running() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_co2_scrubber_running(false);
+        }
+        "START_ELECTROLYZER_STACK" => {
+            if sim.electrolyzer_running() {
+                return Err("Already running".to_string());
+            }
+            sim.set_electrolyzer_running(true);
+        }
+        "STOP_ELECTROLYZER_STACK" => {
+            if !sim.electrolyzer_running() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_electrolyzer_running(false);
+        }
+        "START_WATER_PROCESSOR" => {
+            if sim.water_processor_running() {
+                return Err("Already running".to_string());
+            }
+            sim.set_water_processor_running(true);
+        }
+        "STOP_WATER_PROCESSOR" => {
+            if !sim.water_processor_running() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_water_processor_running(false);
+        }
+        "ISOLATE_ECLSS_BRANCH" => {
+            if sim.branch_isolated() {
+                return Err("Branch already isolated".to_string());
+            }
+            sim.set_branch_isolated(true);
+        }
+        "RESTORE_ECLSS_BRANCH" => {
+            if !sim.branch_isolated() {
+                return Err("Branch already restored".to_string());
+            }
+            sim.set_branch_isolated(false);
+        }
+        "ENABLE_SAFE_HAVEN" => {
+            if sim.safe_haven_enabled() {
+                return Err("Safe-haven already enabled".to_string());
+            }
+            sim.set_safe_haven_enabled(true);
+        }
+        "DISABLE_SAFE_HAVEN" => {
+            if !sim.safe_haven_enabled() {
+                return Err("Safe-haven already disabled".to_string());
+            }
+            sim.set_safe_haven_enabled(false);
+        }
+        "SET_CO2_REMOVAL_FLOW_RATE" => sim.set_co2_removal_flow_target(param1),
+        "SET_OXYGEN_GENERATION_RATE" => sim.set_o2_generation_target(param1),
+        "SET_WATER_RECOVERY_TARGET" => sim.set_water_recovery_target(param1),
+        "SET_CABIN_HUMIDITY_TARGET" => sim.set_humidity_target(param1),
+        "SET_CABIN_PRESSURE_TARGET" => sim.set_cabin_pressure_target(param1),
+        other => return Err(format!("Unknown command: {other}")),
+    }
+    Ok(())
+}
+
+async fn apply_sabatier_advanced_command(
+    context: &AppContext,
+    command: &str,
+    param1: f64,
+) -> Result<(), String> {
+    let mut sim = context.sabatier_sim.write().await;
+    match command {
+        "START_METHANATION" => {
+            if sim.methanation_enabled() {
+                return Err("Already running".to_string());
+            }
+            sim.set_methanation_enabled(true);
+        }
+        "STOP_METHANATION" => {
+            if !sim.methanation_enabled() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_methanation_enabled(false);
+        }
+        "START_FEED_CONDITIONING" => {
+            if sim.feed_conditioning_enabled() {
+                return Err("Already running".to_string());
+            }
+            sim.set_feed_conditioning_enabled(true);
+        }
+        "STOP_FEED_CONDITIONING" => {
+            if !sim.feed_conditioning_enabled() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_feed_conditioning_enabled(false);
+        }
+        "START_HYDROGEN_RECOVERY" => {
+            if sim.hydrogen_recovery_enabled() {
+                return Err("Already running".to_string());
+            }
+            sim.set_hydrogen_recovery_enabled(true);
+        }
+        "STOP_HYDROGEN_RECOVERY" => {
+            if !sim.hydrogen_recovery_enabled() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_hydrogen_recovery_enabled(false);
+        }
+        "START_CATALYST_REGEN" => {
+            if sim.catalyst_regen_active() {
+                return Err("Already running".to_string());
+            }
+            sim.set_catalyst_regen_active(true);
+        }
+        "STOP_CATALYST_REGEN" => {
+            if !sim.catalyst_regen_active() {
+                return Err("Already stopped".to_string());
+            }
+            sim.set_catalyst_regen_active(false);
+        }
+        "EXECUTE_EMERGENCY_VENT" => {
+            if sim.emergency_vent_active() {
+                return Err("Emergency vent already active".to_string());
+            }
+            sim.set_emergency_vent_active(true);
+        }
+        "EXECUTE_SAFE_SHUTDOWN" => sim.safe_shutdown(),
+        "SET_CO2_FEED_VALVE_PCT" => sim.set_co2_feed_valve_pct(param1),
+        "SET_H2_FEED_VALVE_PCT" => sim.set_h2_feed_valve_pct(param1),
+        "SET_REACTOR_TEMP_TARGET_C" => sim.set_reactor_temp_target(param1),
+        "SET_REACTOR_PRESSURE_TARGET_BAR" => sim.set_reactor_pressure_target(param1),
+        other => return Err(format!("Unknown command: {other}")),
+    }
+    Ok(())
 }
 
 fn ensure_subsystem_start_allowed(
@@ -5094,7 +5528,7 @@ async fn ws_client(socket: axum::extract::ws::WebSocket, addr: SocketAddr, conte
     }
 
     let (mut sender, mut receiver) = socket.split();
-    let mut rx = context.systems_snapshots_tx.subscribe();
+    let mut rx = context.snapshots_tx.subscribe();
 
     loop {
         tokio::select! {
@@ -5112,8 +5546,9 @@ async fn ws_client(socket: axum::extract::ws::WebSocket, addr: SocketAddr, conte
             }
             outgoing = rx.recv() => {
                 match outgoing {
-                    Ok(systems_snapshot) => {
-                        let text = match serde_json::to_string(&systems_snapshot) {
+                    Ok(mut snapshot) => {
+                        enrich_with_subsystem_readouts(&context, &mut snapshot).await;
+                        let text = match serde_json::to_string(&snapshot) {
                             Ok(value) => value,
                             Err(_) => continue,
                         };
@@ -5132,6 +5567,44 @@ async fn ws_client(socket: axum::extract::ws::WebSocket, addr: SocketAddr, conte
         let mut sim = context.sim.write().await;
         sim.unregister_client(session_id);
         let _ = context.snapshots_tx.send(sim.snapshot());
+    }
+}
+
+async fn ws_systems_handler(
+    ws: WebSocketUpgrade,
+    State(context): State<AppContext>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| ws_systems_client(socket, context))
+}
+
+async fn ws_systems_client(socket: axum::extract::ws::WebSocket, context: AppContext) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = context.systems_snapshots_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    _ => {}
+                }
+            }
+            outgoing = rx.recv() => {
+                match outgoing {
+                    Ok(systems_snapshot) => {
+                        let text = match serde_json::to_string(&systems_snapshot) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+                        if sender.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
     }
 }
 

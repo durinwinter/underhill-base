@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    ActiveCommand, AlarmState, ClientSession, CommandChannelState, CommandEnum,
+    ActiveCommand, AlarmState, ClientSession, CommandAuditRecord, CommandChannelState, CommandEnum,
     CommandRequestFields, CommandResponseFields, CommandSourceEnum, CommandStatusEnum,
     DiagnosticsState, EventEntry, LeakRateUpdateRequest, MtpModes, MtpModesUpdateRequest,
     MtpProcedureRuntime, MtpRuntime, MtpStateMachine, MtpTreeResponse, PeaInformationLabel,
@@ -17,6 +17,7 @@ const PROC_DEPRESSURIZE: &str = "Proc_DepressurizeForEVA";
 const PROC_PRESSURIZE: &str = "Proc_PressurizeForEntry";
 const PROC_MANUAL_JOG: &str = "Proc_ManualDoorJog";
 const FIXED_TIMESTEP_SEC: f64 = 0.05;
+const COMMAND_AUDIT_CAPACITY: usize = 2_048;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -145,6 +146,10 @@ pub struct Simulation {
     event_log: Vec<EventEntry>,
     operator_channel: CommandChannelState,
     remote_channel: CommandChannelState,
+    #[serde(default)]
+    command_audit: Vec<CommandAuditRecord>,
+    #[serde(default)]
+    next_command_audit_id: u64,
     active_command: ActiveCommand,
     last_operator_execute: bool,
     last_remote_execute: bool,
@@ -182,6 +187,18 @@ impl Simulation {
             .prepare_after_restore(self.equalize_valve_pct);
         self.vent_valve_dynamics
             .prepare_after_restore(self.vent_valve_pct);
+        if self.operator_channel.last_sequence_processed != 0 {
+            self.operator_channel.has_processed_sequence = true;
+        }
+        if self.remote_channel.last_sequence_processed != 0 {
+            self.remote_channel.has_processed_sequence = true;
+        }
+        self.next_command_audit_id = self.next_command_audit_id.max(
+            self.command_audit
+                .last()
+                .map(|record| record.audit_id.saturating_add(1))
+                .unwrap_or(1),
+        );
         self.log_event("INFO", "SYSTEM", "Plant state restored from checkpoint");
     }
 
@@ -287,6 +304,8 @@ impl Simulation {
             event_log: Vec::new(),
             operator_channel: CommandChannelState::default(),
             remote_channel: CommandChannelState::default(),
+            command_audit: Vec::new(),
+            next_command_audit_id: 1,
             active_command: ActiveCommand::default(),
             last_operator_execute: false,
             last_remote_execute: false,
@@ -515,15 +534,34 @@ impl Simulation {
             return self.channel(source).rsp.clone();
         }
 
-        let last_sequence = self.channel(source).last_sequence_processed;
-        if request.sequence_id == last_sequence {
+        let channel = self.channel(source);
+        let accepted_sequence_before = channel
+            .has_processed_sequence
+            .then_some(channel.last_sequence_processed);
+        let sequence_decision =
+            accepted_sequence_before.map(|last| classify_sequence(request.sequence_id, last));
+
+        if sequence_decision == Some(SequenceDecision::Duplicate) {
             let response = CommandResponseFields {
                 ack_sequence_id: request.sequence_id,
                 status: CommandStatusEnum::Rejected,
-                reject_reason: "Duplicate sequence ignored".to_string(),
+                reject_reason: "Duplicate sequence rejected".to_string(),
                 last_update_time_ms: Self::now_ms(),
             };
             self.set_channel_response(source, response.clone());
+            self.diagnostics.last_rejected_command = format!(
+                "{}:{}:{}",
+                source.as_str(),
+                display_command(request.command),
+                response.reject_reason
+            );
+            self.record_command_audit(
+                source,
+                &request,
+                "rejected_replay",
+                &response.reject_reason,
+                accepted_sequence_before,
+            );
             self.log_event(
                 "WARN",
                 source.as_str(),
@@ -531,6 +569,40 @@ impl Simulation {
                     "Rejected duplicate sequence {} for {}",
                     request.sequence_id,
                     display_command(request.command)
+                ),
+            );
+            return response;
+        }
+
+        if sequence_decision == Some(SequenceDecision::Stale) {
+            let response = CommandResponseFields {
+                ack_sequence_id: request.sequence_id,
+                status: CommandStatusEnum::Rejected,
+                reject_reason: "Stale or replayed sequence rejected".to_string(),
+                last_update_time_ms: Self::now_ms(),
+            };
+            self.set_channel_response(source, response.clone());
+            self.diagnostics.last_rejected_command = format!(
+                "{}:{}:{}",
+                source.as_str(),
+                display_command(request.command),
+                response.reject_reason
+            );
+            self.record_command_audit(
+                source,
+                &request,
+                "rejected_replay",
+                &response.reject_reason,
+                accepted_sequence_before,
+            );
+            self.log_event(
+                "WARN",
+                source.as_str(),
+                format!(
+                    "Rejected stale/replayed sequence {} for {} (last accepted={})",
+                    request.sequence_id,
+                    display_command(request.command),
+                    accepted_sequence_before.unwrap_or_default()
                 ),
             );
             return response;
@@ -544,6 +616,13 @@ impl Simulation {
                 last_update_time_ms: Self::now_ms(),
             };
             self.set_channel_response(source, response.clone());
+            self.record_command_audit(
+                source,
+                &request,
+                "rejected_policy",
+                &reason,
+                accepted_sequence_before,
+            );
             self.diagnostics.last_rejected_command = format!(
                 "{}:{}:{}",
                 source.as_str(),
@@ -563,6 +642,7 @@ impl Simulation {
         {
             let channel = self.channel_mut(source);
             channel.last_sequence_processed = request.sequence_id;
+            channel.has_processed_sequence = true;
             channel.rsp = CommandResponseFields {
                 ack_sequence_id: request.sequence_id,
                 status: CommandStatusEnum::Accepted,
@@ -603,6 +683,7 @@ impl Simulation {
                 request.sequence_id
             ),
         );
+        self.record_command_audit(source, &request, "accepted", "", accepted_sequence_before);
 
         if self.apply_immediate_command(request.command, request.param1, request.param2) {
             return self.channel(source).rsp.clone();
@@ -695,6 +776,32 @@ impl Simulation {
             operator_channel: self.operator_channel.clone(),
             remote_channel: self.remote_channel.clone(),
             // new procedure fields are not included in snapshot
+            // ECLSS/Sabatier readouts live in separate subsystem simulations and are
+            // overlaid onto this snapshot at the HTTP/WS delivery boundary (see
+            // `enrich_with_subsystem_readouts` in main.rs).
+            eclss_pressure_pa: 0.0,
+            eclss_co2_ppm: 0.0,
+            eclss_o2_percent: 0.0,
+            eclss_humidity_pct: 0.0,
+            eclss_water_recovery_pct: 0.0,
+            eclss_o2_generation_kgph: 0.0,
+            eclss_co2_capture_kgph: 0.0,
+            sabatier_reactor_temp_c: 0.0,
+            sabatier_reactor_pressure_bar: 0.0,
+            sabatier_co2_feed_kgph: 0.0,
+            sabatier_h2_feed_kgph: 0.0,
+            sabatier_conversion_efficiency_pct: 0.0,
+            sabatier_methane_production_kgph: 0.0,
+            eclss_co2_scrubber_running: false,
+            eclss_electrolyzer_running: false,
+            eclss_water_processor_running: false,
+            eclss_branch_isolated: false,
+            eclss_safe_haven_enabled: false,
+            sabatier_methanation_enabled: false,
+            sabatier_feed_conditioning_enabled: false,
+            sabatier_hydrogen_recovery_enabled: false,
+            sabatier_catalyst_regen_active: false,
+            sabatier_emergency_vent_active: false,
         }
     }
 
@@ -1301,6 +1408,55 @@ impl Simulation {
             self.event_log.drain(0..drain);
         }
     }
+
+    pub fn command_audit(&self) -> &[CommandAuditRecord] {
+        &self.command_audit
+    }
+
+    fn record_command_audit(
+        &mut self,
+        source: CommandSourceEnum,
+        request: &CommandRequestFields,
+        decision: &str,
+        reason: &str,
+        accepted_sequence_before: Option<u32>,
+    ) {
+        let audit_id = self.next_command_audit_id.max(1);
+        self.next_command_audit_id = audit_id.saturating_add(1);
+        self.command_audit.push(CommandAuditRecord {
+            audit_id,
+            timestamp_ms: Self::now_ms(),
+            sim_time_sec: self.sim_time_sec,
+            source,
+            sequence_id: request.sequence_id,
+            command: request.command,
+            decision: decision.to_string(),
+            reason: reason.to_string(),
+            accepted_sequence_before,
+        });
+        if self.command_audit.len() > COMMAND_AUDIT_CAPACITY {
+            let drain = self.command_audit.len() - COMMAND_AUDIT_CAPACITY;
+            self.command_audit.drain(0..drain);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequenceDecision {
+    Newer,
+    Duplicate,
+    Stale,
+}
+
+fn classify_sequence(candidate: u32, last_accepted: u32) -> SequenceDecision {
+    let delta = candidate.wrapping_sub(last_accepted);
+    if delta == 0 {
+        SequenceDecision::Duplicate
+    } else if delta < (1_u32 << 31) {
+        SequenceDecision::Newer
+    } else {
+        SequenceDecision::Stale
+    }
 }
 
 fn move_towards(current: f64, target: f64, speed_per_sec: f64, dt_sec: f64) -> f64 {
@@ -1448,6 +1604,90 @@ mod tests {
         assert_eq!(restored.equalize_valve_dynamics.sensor_bias_pct, -3.0);
         assert!(restored.equalize_valve_dynamics.hard_stuck);
         assert_eq!(restored.equalize_valve_dynamics.leakage_pct, 1.5);
+    }
+
+    fn pulse_command(
+        sim: &mut Simulation,
+        source: CommandSourceEnum,
+        sequence_id: u32,
+        command: CommandEnum,
+    ) -> CommandResponseFields {
+        let request = CommandRequestFields {
+            sequence_id,
+            command,
+            execute: true,
+            ..CommandRequestFields::default()
+        };
+        let response = sim.write_request(source, request.clone());
+        sim.write_request(
+            source,
+            CommandRequestFields {
+                execute: false,
+                ..request
+            },
+        );
+        response
+    }
+
+    #[test]
+    fn stale_and_duplicate_sequences_are_rejected_without_advancing_watermark() {
+        let mut sim = simulation();
+        let source = CommandSourceEnum::RemoteOpcua;
+        assert_eq!(
+            pulse_command(&mut sim, source, 10, CommandEnum::ResetFaults).status,
+            CommandStatusEnum::Complete
+        );
+
+        let duplicate = pulse_command(&mut sim, source, 10, CommandEnum::UnlockOuterDoor);
+        assert_eq!(duplicate.status, CommandStatusEnum::Rejected);
+        assert_eq!(duplicate.reject_reason, "Duplicate sequence rejected");
+
+        let stale = pulse_command(&mut sim, source, 9, CommandEnum::UnlockOuterDoor);
+        assert_eq!(stale.status, CommandStatusEnum::Rejected);
+        assert_eq!(stale.reject_reason, "Stale or replayed sequence rejected");
+        assert_eq!(sim.remote_channel.last_sequence_processed, 10);
+
+        assert_eq!(
+            pulse_command(&mut sim, source, 11, CommandEnum::LockOuterDoor).status,
+            CommandStatusEnum::Complete
+        );
+        assert_eq!(sim.remote_channel.last_sequence_processed, 11);
+        assert_eq!(
+            sim.command_audit
+                .iter()
+                .filter(|record| record.decision == "rejected_replay")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn sequence_wrap_and_audit_survive_checkpoint_serialization() {
+        let mut sim = simulation();
+        let source = CommandSourceEnum::RemoteOpcua;
+        assert_eq!(
+            pulse_command(&mut sim, source, u32::MAX, CommandEnum::ResetFaults).status,
+            CommandStatusEnum::Complete
+        );
+        assert_eq!(
+            pulse_command(&mut sim, source, 0, CommandEnum::ResetFaults).status,
+            CommandStatusEnum::Complete
+        );
+
+        let restored: Simulation =
+            serde_json::from_slice(&serde_json::to_vec(&sim).unwrap()).unwrap();
+        assert!(restored.remote_channel.has_processed_sequence);
+        assert_eq!(restored.remote_channel.last_sequence_processed, 0);
+        assert_eq!(restored.command_audit.len(), 2);
+
+        let stale = pulse_command(
+            &mut restored.clone(),
+            source,
+            u32::MAX,
+            CommandEnum::UnlockOuterDoor,
+        );
+        assert_eq!(stale.status, CommandStatusEnum::Rejected);
+        assert_eq!(stale.reject_reason, "Stale or replayed sequence rejected");
     }
 }
 

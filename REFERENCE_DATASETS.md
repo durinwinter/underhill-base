@@ -123,6 +123,14 @@ REST, UNS, i3X, OPC UA, WebSocket, and historian consumers receive a frozen nomi
 derived nominal alarm. The hidden paired trace and campaign state survive restart and are revealed
 only after completion. This is a native SWaT/WADI/BATADAL-informed attack mechanism; no external
 attack trace or source protocol has been imported or claimed as replayed.
+
+The shared Airlock HTTP/OPC UA command boundary now applies wrap-safe monotonic sequence checks,
+persists its accepted watermark across checkpoint restart, and retains a bounded structured audit.
+The `airlock_command_sequence_replay` campaign establishes a legitimate remote-command watermark,
+then attempts a conflicting duplicate and an older outer-door-unlock command. Qualification requires
+both replay attempts to be rejected without advancing the watermark or changing door/lock state.
+Attempt evidence is blinded with the other campaign traces until completion. This is an Underhill-
+native SWaT/WADI/BATADAL-informed command-path scenario, not a replay of source network traffic.
 The public NASA ICES-2025-127 paper and file checksum are now verified. Four representative ORU
 rows from its published Tables 2, 8, 9, and 10 drive a deterministic, checkpointed constant-failure-
 rate model for oxygen generation, carbon-dioxide removal, humidity control, and water recovery.

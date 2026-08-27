@@ -325,6 +325,15 @@ remain hidden during evaluation, survive restart, and are revealed through the p
 trace API only after scoring. Physical contamination continues during telemetry compromise and
 recovers cyclically after the bounded injection is removed; the plant never resets or ends.
 
+The Airlock command boundary now rejects both duplicate and older sequence IDs through the same
+handler used by REST and OPC UA, using wrap-safe serial arithmetic and a checkpointed watermark.
+A bounded persistent audit is available at `GET /api/v1/command-audit`. The blinded
+`airlock_command_sequence_replay` campaign sends a safe accepted baseline followed by duplicate and
+stale attempts to unlock the outer door, then scores replay rejection, watermark preservation, and
+unchanged door/lock state against `underhill-airlock-command-replay-v1`. This is the first native
+SWaT/WADI/BATADAL-informed command-path qualification; scoped caller authority leases remain a
+separate implementation item.
+
 - hard safety-envelope violations;
 - mass, energy, and inventory reconciliation error;
 - time in degraded/emergency states;

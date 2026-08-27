@@ -409,10 +409,10 @@ function renderEvents(snapshot) {
 
 function renderSessions(snapshot) {
   dom.sessionList.innerHTML = "";
-  snapshot.active_sessions.forEach(s => {
+  snapshot.diagnostics.connected_clients.forEach(s => {
     const div = document.createElement("div");
     div.className = "session-row";
-    div.textContent = `${s.client_id} | ${s.remote_addr} | ${s.authorized ? 'AUTH' : 'ANON'}`;
+    div.textContent = `${s.session_name} | ${s.remote_address}`;
     dom.sessionList.appendChild(div);
   });
 }
@@ -438,20 +438,25 @@ async function showAlert(msg) {
   setTimeout(() => { if (alert.parentNode) alert.parentNode.removeChild(alert); }, 4000);
 }
 
-async function sendOperatorCommand(command, p1, p2) {
-  try {
-    const payload = {
+async function writeOperatorCommand(command, p1, p2, execute) {
+  return fetch("/api/commands/operator/write", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
       sequence_id: state.sequenceId++,
       command,
       param1: p1,
       param2: p2,
-      execute: true,
-    };
-    const res = await fetch("/api/commands/operator/write", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+      execute,
+    }),
+  });
+}
+
+async function sendOperatorCommand(command, p1, p2) {
+  let reachedServer = false;
+  try {
+    const res = await writeOperatorCommand(command, p1, p2, true);
+    reachedServer = true;
     if (!res.ok) {
       const text = await res.text();
       await showAlert(`Command request failed: ${text || res.status}`);
@@ -465,6 +470,13 @@ async function sendOperatorCommand(command, p1, p2) {
     await fetchSnapshot();
   } catch (error) {
     await showAlert(`Command transport error: ${error instanceof Error ? error.message : "Unknown error"}`);
+  } finally {
+    if (reachedServer) {
+      // The backend command channel latches on a rising edge (false -> true) of
+      // `execute`. Drop it back to false so the next distinct command is recognized
+      // instead of being silently ignored as "not a rising edge".
+      writeOperatorCommand(command, p1, p2, false).catch(() => undefined);
+    }
   }
 }
 

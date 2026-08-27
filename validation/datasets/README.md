@@ -52,3 +52,11 @@ true excursion, observed flatness, peak divergence, and concealed-alarm duration
 `contracts/underhill-water-conductivity-replay-v1.json`. Its evidence class is
 `underhill_native_swat_wadi_batadal_informed`: it validates Underhill's native telemetry-integrity
 path and does not claim source-protocol or raw-dataset replay.
+
+`airlock_command_sequence_replay` exercises the command handler shared by REST and OPC UA. A safe
+accepted command establishes the remote sequence watermark; a conflicting duplicate and an older
+outer-door-unlock attempt must then be rejected without moving that watermark or changing door and
+lock state. The completed protected trace is scored by
+`contracts/underhill-airlock-command-replay-v1.json`. Its evidence class is also
+`underhill_native_swat_wadi_batadal_informed`; it is an Underhill-native command-path test, not a
+replay of source packets or protocol traffic.

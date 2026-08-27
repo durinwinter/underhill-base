@@ -335,7 +335,7 @@
         if (!window.ws && window.location.protocol !== 'file:') {
           try {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            const wsUrl = `${protocol}//${window.location.host}/ws/systems`;
             window.ws = new WebSocket(wsUrl);
             
             window.ws.onmessage = (evt) => {

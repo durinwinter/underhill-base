@@ -300,6 +300,7 @@ The script auto-detects whether `flatpak-spawn` is available; on a normal host s
 - `GET /api/v1/telemetry/stats`
 - `GET /api/v1/telemetry/catalog?subsystem_family=power&publication_class=fast&offset=0&limit=250`
 - `GET /api/v1/telemetry/history?tag_id=underhill.v1.power.00000.state_of_charge&limit=500`
+- `GET /api/v1/command-audit?offset=0&limit=250`
 - `GET /api/events`
 - `GET /api/mtp/tree`
 - `GET /api/v1/pea`

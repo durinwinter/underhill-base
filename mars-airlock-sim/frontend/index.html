@@ -483,7 +483,11 @@
     </div>
   </main>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module">
+    // Cache-bust on every load so a backend restart / redeploy can't leave a
+    // client running stale control logic against a new server.
+    import(`./app.js?v=${Date.now()}`);
+  </script>
 </body>
 
 </html>
